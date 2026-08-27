@@ -1,5 +1,3 @@
-
-
 <a href="https://gamebanana.com/mods/710227"><img src="https://gamebanana.com/mods/embeddables/710227?type=large" alt="Lovelock mod on GameBanana" /></a>
 
 # Lovelock Companion
@@ -11,6 +9,41 @@ Lovelock Companion is a desktop app that syncs local-player deaths, kills, assis
 Lovelock Companion does not work by itself. Install and enable the [Lovelock mod from GameBanana](https://gamebanana.com/mods/710227) in Deadlock before starting the companion. The mod detects gameplay events and writes them to the log that the companion listens to.
 
 Huge shoutout to volc/bolc for creating the original DeadlockShock mod that Lovelock Companion is built on.
+
+## Disclaimer
+
+This is an unofficial, third-party mod and companion app, not affiliated with or endorsed by Valve. Using client mods is against most games' terms of service in some form, and Deadlock is no exception. Use it at your own risk. I am not liable for any bans, suspensions, or other consequences you receive from using this software.
+
+## Getting Started (no coding required)
+
+You don't need to build anything or know how to code to use this. Here's everything, start to finish:
+
+**What you need:**
+- [Deadlock](https://store.steampowered.com/app/1422450/Deadlock/) installed via Steam
+- A Lovense toy, plus the [Lovense Connect/Remote app](https://www.lovense.com/download) on the same PC you play Deadlock on
+- Windows (Lovelock Companion also runs on Linux, but these steps assume Windows)
+
+**Steps:**
+
+1. **Install the Lovelock mod.** Download it from [GameBanana](https://gamebanana.com/mods/710227) and follow GameBanana's install instructions (or use a mod manager like [Deadlock Mod Manager](https://deadlockmods.app/)) to get it into Deadlock's `addons` folder, then make sure it's enabled in Deadlock's in-game mods menu.
+
+2. **Set Deadlock's launch option.** In Steam, right-click Deadlock → **Properties** → **General** → **Launch Options**, and add:
+   ```
+   -condebug
+   ```
+   This makes Deadlock write the log file Lovelock Companion reads from. Without it, nothing will work.
+
+3. **Download Lovelock Companion.** Grab `companion.exe` from this repo's [Releases page](https://github.com/asteriaow/lovelock/releases). No installer needed, just download and run it.
+
+4. **Open the Lovense Remote app** and turn on **Game Mode**. Leave it running in the background.
+
+5. **Run `companion.exe`.** In the **Setup** tab, click **Test connection**. The default connection settings already work for the common case (Lovense Remote on the same PC), so you usually don't need to change anything. Once it's connected, optionally pick a specific toy (or leave it unselected to vibrate every connected toy).
+
+6. **Turn on your triggers.** Go to the **Effects** tab and enable whichever of Death, Kill, Assist, Ability use, and Cooldown ready you want (Death is on by default; the rest are opt-in). Adjust each trigger's vibration strength/duration to taste.
+
+7. **Launch Deadlock and play.** Lovelock Companion auto-detects the game and starts listening on its own. Just leave the companion window open in the background.
+
+If something's not connecting, check **Menu → Show logs** inside the companion for live diagnostics.
 
 ## Contents
 
@@ -40,7 +73,7 @@ On Windows, `build_and_run.bat` builds Lovelock Companion in debug mode and laun
 
 In **Setup**, enter the Lovense Connect/Remote domain and HTTP port, test the connection, and optionally pick a specific toy (leave unselected to vibrate every connected toy).
 
-In **Effects**, configure Death, Kill, Assist, Ability use, and Cooldown ready independently. Each trigger has its own vibration profile (fixed strength/duration, or a random interval). Ability-use and cooldown-ready also have independent positional-slot filters that apply across heroes; ability names appear when the addon reports them, with numbered slots as the fallback. Use the explicit Copy control to copy only the active vibration profile between triggers without changing enablement or ability selection. Local-player death is enabled by default, while Kill, Assist, and both ability triggers are opt-in. Cooldown ready covers both a normal cooldown finishing and a charged ability restoring a charge. Kill and Assist are read from the local player's own scoreboard KDA counters, so they fire once per credited kill or assist regardless of who lands the killing blow on a shared-credit takedown.
+In **Effects**, configure Death, Kill, Assist, Ability use, and Cooldown ready independently. Each trigger has its own vibration profile (fixed strength/duration, or a random interval). Ability-use and cooldown-ready also have independent positional-slot filters that apply across heroes; ability names appear when the addon reports them, with numbered slots as the fallback. Use the explicit Copy control to copy only the active vibration profile between triggers without changing enablement or ability selection. Local-player death is enabled by default, while Kill, Assist, and both ability triggers are opt-in. Cooldown ready covers both a normal cooldown finishing and a charged ability restoring a charge. Kill fires from the local player's live kill-streak counter and Assist fires from the on-screen kill-assist popup, both of which update without needing the scoreboard (Tab) open.
 
 In **Game connection**, Lovelock Companion automatically resumes a saved `console.log` path or auto-detects Deadlock and starts the listener at launch. Use **Auto-detect** and **Start/Restart listener** for diagnostics, retry, or a manual path override. Deadlock must run with `-condebug` so the log is written.
 On Windows releases Lovelock Companion uses the GUI application subsystem, so launching it from Explorer does not open a command window. On Windows and Linux, open **Menu → Show logs** for selectable startup and live diagnostics. Logs are retained only in memory for the current run and are not written to a persistent log file.
