@@ -24,6 +24,18 @@
     // very unlikely, since baselines (re)establish at match start.
     var BASELINE_SETTLE_POLLS = 250; // ~25s at POLL_INTERVAL_SECONDS = 0.1
     var baselineSettlePollsRemaining = 0;
+    // The kill-streak popup (PlayerDetailsContainer > KillStreakContainer >
+    // KillStreakText, inside the local player's own CitadelHudTopBarPlayer
+    // panel) shows a running kill count and pops on every hero kill, isolated
+    // ones included -- unlike the Tab-gated personal KDA text. Its first child
+    // Label holds the number; sibling panels hold the "Kill Streak!" /
+    // "First Blood!" banners. The popup animates out after the streak's
+    // timeout, so a null reading means "not currently shown". Require a few
+    // consecutive nulls before dropping the baseline so a one-frame render
+    // gap mid-animation doesn't make the next count look like a new streak.
+    var lastKillStreakCount = null;
+    var killStreakNullPolls = 0;
+    var KILL_STREAK_RESET_POLLS = 3; // ~0.3s at POLL_INTERVAL_SECONDS = 0.1
 
     function emit(eventName, fields) {
         var payload = {
@@ -422,6 +434,126 @@
         }
     }
 
+    function killStreakCount(player) {
+        var textNode = findChildById(player, "KillStreakText");
+        if (!isValidPanel(textNode)) {
+            return null;
+        }
+        // The count is the first direct Label child; the sibling panel below
+        // it holds the "Kill Streak!" / "First Blood!" banner labels.
+        var children = panelChildren(textNode);
+        for (var i = 0; i < children.length; i++) {
+            if (panelProperty(children[i], "paneltype") !== "Label") {
+                continue;
+            }
+            var text = panelProperty(children[i], "text");
+            if (text === null) {
+                return null;
+            }
+            var value = Number(text);
+            return isFinite(value) && value >= 0 ? Math.floor(value) : null;
+        }
+        return null;
+    }
+
+    function pollOwnKillStreak(player, forceBaseline) {
+        var count = killStreakCount(player);
+
+        if (count === null) {
+            // Popup not currently shown. Only drop the baseline once it has
+            // been gone for a few polls, so a single-frame render gap during
+            // the pop-in/out animation doesn't reset mid-streak.
+            killStreakNullPolls++;
+            if (killStreakNullPolls >= KILL_STREAK_RESET_POLLS) {
+                lastKillStreakCount = null;
+            }
+            return;
+        }
+        killStreakNullPolls = 0;
+
+        if (forceBaseline) {
+            // Baseline (re)establishing -- e.g. mod just loaded mid-streak, or
+            // just respawned. Adopt whatever is on screen without crediting it.
+            lastKillStreakCount = count;
+            return;
+        }
+
+        if (lastKillStreakCount === null) {
+            // Popup just appeared: every hero kill pops it, so a fresh count
+            // of >=1 is a kill we haven't credited yet.
+            if (count >= 1) {
+                emitAction("local_player_kill", {
+                    detection: "kill_streak_counter_increment",
+                    kills_before: 0,
+                    kills_after: count
+                });
+            }
+        } else if (count > lastKillStreakCount) {
+            emitAction("local_player_kill", {
+                detection: "kill_streak_counter_increment",
+                kills_before: lastKillStreakCount,
+                kills_after: count
+            });
+        }
+        lastKillStreakCount = count;
+    }
+
+    // The centre-screen damage-impact popup (root id "damageImpactInfo")
+    // gets one child panel per enemy you damaged/killed/assisted on, named
+    // after that enemy's hero and (re)created for each new instance. When
+    // the local player is credited with an assist, that instance panel
+    // carries an "assist" class (alongside "KillAssistContainer" showing a
+    // "KILL ASSIST" label) -- a class flag rather than bound text, so unlike
+    // the Tab-gated personal KDA counters it's live regardless of the
+    // scoreboard. Instance panels are destroyed after their fade-out
+    // animation, so track already-credited panel references (pruned once
+    // invalid) rather than a simple counter to avoid double-crediting the
+    // same instance across polls.
+    var creditedAssistPanels = [];
+    // findChildById searches the whole HUD tree from its highest reachable
+    // root, which is expensive; running it every single 100ms poll (forever,
+    // for the whole match) risks slow enough script execution to disrupt the
+    // poll loop itself -- including death/kill detection, which share it.
+    // The assist popup stays on screen for a few seconds, so a few hundred
+    // ms of extra latency here is unnoticeable.
+    var damageImpactPollCounter = 0;
+    var DAMAGE_IMPACT_POLL_INTERVAL_POLLS = 3; // ~0.3s at POLL_INTERVAL_SECONDS = 0.1
+
+    function pollDamageImpactAssists(root) {
+        damageImpactPollCounter++;
+        if (damageImpactPollCounter < DAMAGE_IMPACT_POLL_INTERVAL_POLLS) {
+            return;
+        }
+        damageImpactPollCounter = 0;
+
+        var container = findChildById(root, "damageImpactInfo");
+        if (!isValidPanel(container)) {
+            return;
+        }
+        var stillValid = [];
+        for (var p = 0; p < creditedAssistPanels.length; p++) {
+            if (isValidPanel(creditedAssistPanels[p])) {
+                stillValid.push(creditedAssistPanels[p]);
+            }
+        }
+        creditedAssistPanels = stillValid;
+
+        var children = panelChildren(container);
+        for (var i = 0; i < children.length; i++) {
+            var child = children[i];
+            if (!isValidPanel(child) || !panelHasClass(child, "assist")) {
+                continue;
+            }
+            if (creditedAssistPanels.indexOf(child) !== -1) {
+                continue;
+            }
+            creditedAssistPanels.push(child);
+            emitAction("local_player_assist", {
+                detection: "damage_impact_assist_class"
+            });
+        }
+    }
+
     function findLocalPlayerPanel() {
         if (isValidPanel(localPlayerPanel)) {
             return localPlayerPanel;
@@ -429,6 +561,7 @@
 
         localPlayerPanel = null;
         deathBaselineEstablished = false;
+        lastKillStreakCount = null;
 
         var panels = context.FindChildrenWithClassTraverse("LocalPlayer");
         for (var i = 0; i < panels.length; i++) {
@@ -475,6 +608,8 @@
         }
 
         pollAbilities(forceAbilityBaseline || isDead);
+        pollOwnKillStreak(player, forceAbilityBaseline || baselineSettlePollsRemaining > 0);
+        pollDamageImpactAssists(highestContextAncestor());
         $.Schedule(POLL_INTERVAL_SECONDS, pollState);
     }
 

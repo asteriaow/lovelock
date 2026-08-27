@@ -98,6 +98,18 @@ function createAbilityEntry({
     return { abilityName, chargeContainer, chargeProgress, cooldownTimer, entry };
 }
 
+// Sibling of the count Label inside KillStreakText in the live HUD: a panel
+// holding the "Kill Streak!" / "First Blood!" banner labels. Present so the
+// mod's "first direct Label child" selection is actually exercised.
+function killStreakBanner() {
+    return createPanel({
+        children: [
+            createPanel({ paneltype: "Label", text: "Kill\nStreak!" }),
+            createPanel({ paneltype: "Label", text: "First\nBlood!" }),
+        ],
+    });
+}
+
 function createHarness({
     initiallyDead = false,
     playerAvailable = true,
@@ -116,9 +128,11 @@ function createHarness({
 
     let killsLabel = createPanel({ classes: ["PlayerStat", "kills"], paneltype: "Label", text: String(kills) });
     let assistsLabel = createPanel({ classes: ["PlayerStat", "assists"], paneltype: "Label", text: String(assists) });
+    let killStreakLabel = createPanel({ paneltype: "Label", text: null });
+    let killStreakText = createPanel({ id: "KillStreakText", children: [killStreakLabel, killStreakBanner()] });
     let player = createPanel({
         paneltype: "CitadelHudTopBarPlayer",
-        children: [killsLabel, assistsLabel],
+        children: [killsLabel, assistsLabel, killStreakText],
     });
     player.BHasClass = (className) => className === "Dead" && dead;
 
@@ -129,7 +143,9 @@ function createHarness({
         attributes: { hero_id: "hero_a" },
         children: [abilityParts.entry],
     });
-    const hudRoot = createPanel({ id: "HudCore", children: [abilityRoot] });
+    let damageImpactInstances = [];
+    const damageImpactInfo = createPanel({ id: "damageImpactInfo", children: [] });
+    const hudRoot = createPanel({ id: "HudCore", children: [abilityRoot, damageImpactInfo] });
 
     const context = createPanel();
     context.GetParent = () => rootAvailable ? hudRoot : null;
@@ -203,10 +219,19 @@ function createHarness({
         }
     }
 
+    function advanceDamageImpactScan() {
+        // pollDamageImpactAssists only actually scans every
+        // DAMAGE_IMPACT_POLL_INTERVAL_POLLS polls in death_http_bridge.js.
+        for (let i = 0; i < 3; i++) {
+            runNextPoll();
+        }
+    }
+
     return {
         events,
         runNextPoll,
         settle,
+        advanceDamageImpactScan,
         scheduled,
         setAbilityState,
         setAbilityComplete: (complete) => {
@@ -224,14 +249,42 @@ function createHarness({
             player.setValid(false);
             killsLabel = createPanel({ classes: ["PlayerStat", "kills"], paneltype: "Label", text: killsLabel.text });
             assistsLabel = createPanel({ classes: ["PlayerStat", "assists"], paneltype: "Label", text: assistsLabel.text });
+            killStreakLabel = createPanel({ paneltype: "Label", text: killStreakLabel.text });
+            killStreakText = createPanel({ id: "KillStreakText", children: [killStreakLabel, killStreakBanner()] });
             player = createPanel({
                 paneltype: "CitadelHudTopBarPlayer",
-                children: [killsLabel, assistsLabel],
+                children: [killsLabel, assistsLabel, killStreakText],
             });
             player.BHasClass = (className) => className === "Dead" && dead;
         },
         setKills: (value) => { killsLabel.setText(String(value)); },
         setAssists: (value) => { assistsLabel.setText(String(value)); },
+        setKillStreak: (value) => { killStreakLabel.setText(value === null ? null : String(value)); },
+        spawnDamageImpactInstance: ({ name = "Enemy", assist = false } = {}) => {
+            const instance = createPanel({
+                id: name,
+                classes: assist
+                    ? ["team2", "damageImpactInstance", "assist", "fadeIn"]
+                    : ["team2", "damageImpactInstance", "fadeIn"],
+                children: [
+                    createPanel({
+                        id: "KillAssistContainer",
+                        children: [
+                            createPanel({ classes: ["killLabel"], paneltype: "Label", text: "KILL" }),
+                            createPanel({ classes: ["assistLabel"], paneltype: "Label", text: "KILL ASSIST" }),
+                        ],
+                    }),
+                ],
+            });
+            damageImpactInstances = [...damageImpactInstances, instance];
+            damageImpactInfo.setChildren(damageImpactInstances);
+            return instance;
+        },
+        removeDamageImpactInstance: (instance) => {
+            instance.setValid(false);
+            damageImpactInstances = damageImpactInstances.filter((candidate) => candidate !== instance);
+            damageImpactInfo.setChildren(damageImpactInstances);
+        },
         invalidateContext: () => { contextValid = false; },
     };
 }
@@ -623,6 +676,139 @@ describe("death_http_bridge", () => {
             expect.objectContaining({ sequence: 1, detection: "top_bar_local_player_dead_class" }),
             expect.objectContaining({ sequence: 2, detection: "top_bar_local_player_dead_class" }),
         ]);
+    });
+
+    test("emits a kill when the streak popup appears and again each time it climbs", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setKillStreak(1);
+        harness.runNextPoll();
+        harness.setKillStreak(2);
+        harness.runNextPoll();
+
+        expect(harness.events("local_player_kill")).toEqual([
+            expect.objectContaining({
+                detection: "kill_streak_counter_increment",
+                kills_before: 0,
+                kills_after: 1,
+            }),
+            expect.objectContaining({
+                detection: "kill_streak_counter_increment",
+                kills_before: 1,
+                kills_after: 2,
+            }),
+        ]);
+    });
+
+    test("does not credit a streak that is already on screen when the baseline establishes", () => {
+        const harness = createHarness();
+        harness.setKillStreak(3);
+        harness.settle();
+
+        expect(harness.events("local_player_kill")).toHaveLength(0);
+
+        harness.setKillStreak(4);
+        harness.runNextPoll();
+
+        expect(harness.events("local_player_kill")).toEqual([
+            expect.objectContaining({ kills_before: 3, kills_after: 4 }),
+        ]);
+    });
+
+    test("a one-poll gap in the popup does not reset the streak baseline", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setKillStreak(2);
+        harness.runNextPoll();
+        harness.setKillStreak(null);
+        harness.runNextPoll();
+        harness.setKillStreak(2);
+        harness.runNextPoll();
+
+        expect(harness.events("local_player_kill")).toEqual([
+            expect.objectContaining({ kills_before: 0, kills_after: 2 }),
+        ]);
+    });
+
+    test("the popup reappearing after a sustained hide counts as a fresh kill", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setKillStreak(2);
+        harness.runNextPoll();
+        harness.setKillStreak(null);
+        harness.runNextPoll();
+        harness.runNextPoll();
+        harness.runNextPoll();
+        harness.setKillStreak(1);
+        harness.runNextPoll();
+
+        expect(harness.events("local_player_kill")).toEqual([
+            expect.objectContaining({ kills_before: 0, kills_after: 2 }),
+            expect.objectContaining({ kills_before: 0, kills_after: 1 }),
+        ]);
+    });
+
+    test("does not emit when the streak counter holds steady or ticks down", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setKillStreak(2);
+        harness.runNextPoll();
+        harness.setKillStreak(2);
+        harness.runNextPoll();
+        harness.setKillStreak(1);
+        harness.runNextPoll();
+
+        expect(harness.events("local_player_kill")).toEqual([
+            expect.objectContaining({ kills_before: 0, kills_after: 2 }),
+        ]);
+    });
+
+    test("emits an assist when a damage-impact instance carries the assist class", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Abrams", assist: true });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("local_player_assist")).toEqual([
+            expect.objectContaining({ detection: "damage_impact_assist_class" }),
+        ]);
+    });
+
+    test("does not emit an assist for a damage-impact instance without the assist class", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Abrams", assist: false });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("local_player_assist")).toHaveLength(0);
+    });
+
+    test("does not double-credit the same assist instance across polls", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Abrams", assist: true });
+        harness.advanceDamageImpactScan();
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("local_player_assist")).toHaveLength(1);
+    });
+
+    test("credits a second assist once the first instance is torn down", () => {
+        const harness = createHarness();
+        const first = harness.spawnDamageImpactInstance({ name: "Abrams", assist: true });
+        harness.advanceDamageImpactScan();
+        harness.removeDamageImpactInstance(first);
+        harness.spawnDamageImpactInstance({ name: "Vindicta", assist: true });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("local_player_assist")).toHaveLength(2);
+    });
+
+    test("credits simultaneous assists on separate instances independently", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Abrams", assist: true });
+        harness.spawnDamageImpactInstance({ name: "Vindicta", assist: false });
+        harness.spawnDamageImpactInstance({ name: "Lash", assist: true });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("local_player_assist")).toHaveLength(2);
     });
 
     test("stops scheduling after its Panorama context is destroyed", () => {
