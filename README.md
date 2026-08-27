@@ -1,12 +1,14 @@
 
 
+<a href="https://gamebanana.com/mods/710227"><img src="https://gamebanana.com/mods/embeddables/710227?type=large" alt="Lovelock mod on GameBanana" /></a>
+
 # Lovelock Companion
 
 Lovelock Companion is a desktop app that syncs local-player deaths, kills, assists, ability uses, and cooldown readiness in Deadlock to a Lovense toy over the local Standard API.
 
 ## !!! Required Deadlock mod !!!
 
-Lovelock Companion does not work by itself. Install and enable the [DeadlockShock mod from GameBanana](https://gamebanana.com/mods/700758) in Deadlock before starting the companion. The mod detects gameplay events and writes them to the log that the companion listens to.
+Lovelock Companion does not work by itself. Install and enable the [Lovelock mod from GameBanana](https://gamebanana.com/mods/710227) in Deadlock before starting the companion. The mod detects gameplay events and writes them to the log that the companion listens to.
 
 Huge shoutout to volc/bolc for creating the original DeadlockShock mod that Lovelock Companion is built on.
 
