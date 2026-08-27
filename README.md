@@ -1,4 +1,4 @@
-[![](https://gamebanana.com/mods/embeddables/700758?type=large)](https://gamebanana.com/mods/700758)
+
 
 # Lovelock Companion
 
