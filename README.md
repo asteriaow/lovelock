@@ -8,7 +8,7 @@ Lovelock Companion is a desktop app that syncs local-player events in Deadlock t
 
 Lovelock Companion does not work by itself. Install and enable the [Lovelock mod from GameBanana](https://gamebanana.com/mods/718568) in Deadlock before starting the companion. The mod detects gameplay events and writes them to the log that the companion listens to.
 
-Huge shoutout to volc/bolc for creating the original DeadlockShock mod that Lovelock Companion is built on.
+Huge shoutout to volc/bolc for creating the original [DeadlockShock mod](https://gamebanana.com/mods/700758) that Lovelock Companion is built on.
 
 ## Lovense promotion
 
@@ -99,8 +99,8 @@ field in the log names which HUD surface fired it.
   Remote app on the same PC, then Test connection. Connection settings, toy
   selection, and per-trigger vibration settings are all persisted.
 
-The DeadlockShock mod that feeds Lovelock Companion its game events is built
-and published separately; its source isn't part of this repo.
+The [DeadlockShock mod](https://gamebanana.com/mods/700758) that feeds Lovelock Companion its game events is built
+and published separately [DeadlockShock Repo](https://github.com/VolcanoCookies/deadlockshock).
 
 ## Preview
 
@@ -136,4 +136,4 @@ git tag v<version>
 git push origin v<version>
 ```
 
-Drone verifies `DRONE_TAG == v<companion Cargo version>` before building and publishing the companion artifacts. The DeadlockShock mod VPK is built and published to GameBanana separately; Lovelock Companion warns in-app when the connected mod's reported version is older than the companion expects, so keep the GameBanana listing reasonably current with the companion release.
+Drone verifies `DRONE_TAG == v<companion Cargo version>` before building and publishing the companion artifacts. The [DeadlockShock mod](https://gamebanana.com/mods/700758) is built and published separately and is not part of this release pipeline.
