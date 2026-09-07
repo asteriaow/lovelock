@@ -148,6 +148,12 @@ pub enum BridgeEvent {
     SoulSecure(CountTrigger),
     ParrySuccess(CountTrigger),
     ParryFail(CountTrigger),
+    ObjectiveGuardian(CountTrigger),
+    ObjectiveWalker(CountTrigger),
+    ObjectiveBaseGuardian(CountTrigger),
+    ObjectiveShrine(CountTrigger),
+    ObjectivePatronWeakened(CountTrigger),
+    GameWon(CountTrigger),
     DamageTakenIntensity(CountTrigger),
     AbilityUsed(AbilityTrigger),
     AbilityCooldownReady(AbilityTrigger),
@@ -171,6 +177,12 @@ impl BridgeEvent {
             Self::SoulSecure(_) => "soul_secure",
             Self::ParrySuccess(_) => "parry_success",
             Self::ParryFail(_) => "parry_fail",
+            Self::ObjectiveGuardian(_) => "objective_guardian",
+            Self::ObjectiveWalker(_) => "objective_walker",
+            Self::ObjectiveBaseGuardian(_) => "objective_base_guardian",
+            Self::ObjectiveShrine(_) => "objective_shrine",
+            Self::ObjectivePatronWeakened(_) => "objective_patron_weakened",
+            Self::GameWon(_) => "game_won",
             Self::DamageTakenIntensity(_) => "damage_taken_intensity",
             Self::AbilityUsed(_) => "ability_used",
             Self::AbilityCooldownReady(_) => "ability_cooldown_ready",
@@ -274,6 +286,54 @@ enum WireEvent {
     },
     #[serde(rename = "parry_fail")]
     ParryFail {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "objective_guardian")]
+    ObjectiveGuardian {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "objective_walker")]
+    ObjectiveWalker {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "objective_base_guardian")]
+    ObjectiveBaseGuardian {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "objective_shrine")]
+    ObjectiveShrine {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "objective_patron_weakened")]
+    ObjectivePatronWeakened {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "game_won")]
+    GameWon {
         schema: u32,
         session_id: String,
         client_time_ms: u64,
@@ -521,6 +581,96 @@ pub fn parse_bridge_record(record: &str) -> Option<BridgeEvent> {
             sequence,
             detection,
         } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::ParryFail(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::ObjectiveGuardian {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::ObjectiveGuardian(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::ObjectiveWalker {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::ObjectiveWalker(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::ObjectiveBaseGuardian {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::ObjectiveBaseGuardian(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::ObjectiveShrine {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::ObjectiveShrine(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::ObjectivePatronWeakened {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::ObjectivePatronWeakened(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::GameWon {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::GameWon(CountTrigger {
             schema,
             session_id,
             client_time_ms,
@@ -1246,6 +1396,12 @@ fn log_rejected_bridge_record(line: &str) {
                 | "soul_secure"
                 | "parry_success"
                 | "parry_fail"
+                | "objective_guardian"
+                | "objective_walker"
+                | "objective_base_guardian"
+                | "objective_shrine"
+                | "objective_patron_weakened"
+                | "game_won"
                 | "damage_taken_intensity"
                 | "damage_given"
         )
@@ -1478,6 +1634,8 @@ mod tests {
     const ALLY_SHIELDED_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"ally_shielded\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000560,\"sequence\":13,\"detection\":\"impact_child_bar:barrierGained\"}";
     const SOUL_DENY_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"soul_deny\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000570,\"sequence\":14,\"detection\":\"feedback_indicator_class:deny\"}";
     const PARRY_FAIL_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"parry_fail\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000580,\"sequence\":15,\"detection\":\"stunned_after_parry\"}";
+    const OBJECTIVE_WALKER_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"objective_walker\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000590,\"sequence\":16,\"detection\":\"objectives_map:tier2_alive_cleared\"}";
+    const GAME_WON_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"game_won\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000600,\"sequence\":17,\"detection\":\"match_end:local_team_victory\"}";
     const DAMAGE_GIVEN_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"damage_given\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000590,\"sequence\":16,\"detection\":\"feedback_damage_numbers\",\"amount\":275.0}";
 
     #[test]
@@ -1660,6 +1818,30 @@ mod tests {
                 client_time_ms: 1_700_000_000_580,
                 sequence: 15,
                 detection: "stunned_after_parry".to_owned(),
+                count_before: None,
+                count_after: None,
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(OBJECTIVE_WALKER_RECORD),
+            Some(BridgeEvent::ObjectiveWalker(CountTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_590,
+                sequence: 16,
+                detection: "objectives_map:tier2_alive_cleared".to_owned(),
+                count_before: None,
+                count_after: None,
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(GAME_WON_RECORD),
+            Some(BridgeEvent::GameWon(CountTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_600,
+                sequence: 17,
+                detection: "match_end:local_team_victory".to_owned(),
                 count_before: None,
                 count_after: None,
             }))

@@ -2,7 +2,7 @@
 
 # Lovelock Companion
 
-Lovelock Companion is a desktop app that syncs local-player events in Deadlock to a Lovense toy over the local Standard API. It reacts to deaths, kills, assists, ability use and cooldowns, damage dealt and taken, healing received, healing or shielding a teammate, soul-orb denies, and parries. See [Triggers](#triggers) for the full list.
+Lovelock Companion is a desktop app that syncs local-player events in Deadlock to a Lovense toy over the local Standard API. It reacts to deaths, kills, assists, ability use and cooldowns, damage dealt and taken, healing received, healing or shielding a teammate, soul-orb denies, parries, objective takedowns (Guardian, Walker, Shrine, ...), and winning the match. See [Triggers](#triggers) for the full list.
 
 ## !!! Required Deadlock mod !!!
 
@@ -67,6 +67,12 @@ overlap-priority order (reorderable in the UI) decides which one drives the toy.
 | **Soul orb deny** | You deny an enemy's soul orb | Reads the dedicated `deny` combat indicator. |
 | **Parry success** | You throw a parry and it connects (an enemy is stunned within a short window, and you aren't) | See caveats below. |
 | **Got parried** | You get stunned right after starting a parry | Detected from your crosshair's stunned state. |
+| **Guardian destroyed** | An enemy Guardian falls | Objectives minimap panel loses its `Alive` state. |
+| **Walker destroyed** | An enemy Walker falls | Same objectives minimap surface. |
+| **Base Guardian destroyed** | An enemy Base Guardian falls | Best-effort: the centre-screen boss-health bar. |
+| **Shrine destroyed** | An enemy Shrine falls | Best-effort: the centre-screen boss-health bar. |
+| **Patron weakened** | The enemy Patron enters its first (weakened) phase | Best-effort: the boss-health bar shows `weakened`. |
+| **Game won** | Your team wins the match | The match-end screen shows your team's victory (also fires if the enemy Core falls first). |
 
 Copy a vibration profile between triggers with the explicit **Copy** control
 (it copies only the active profile, not enablement or filters). Setup, the
@@ -81,6 +87,14 @@ nothing. **Soul orb secure** is not a trigger: the HUD shows one flat soul
 number for every soul gain, so "you shot the orb" can't be told from a
 walk-over. Details in
 [`docs/parry-and-soul-deny-research.md`](docs/parry-and-soul-deny-research.md).
+
+**Objective caveats.** Guardian / Walker / Game won read persistent, map-wide
+HUD panels and are reliable. Base Guardian / Shrine / Patron weakened have no
+such panel, so they are read off the single centre-screen boss-health bar,
+which only shows the objective you are currently near or contesting — a kill
+that happens while you are elsewhere can be missed. Each trigger's `detection`
+field in the log names which HUD surface fired it. Details in
+[`docs/objective-triggers-research.md`](docs/objective-triggers-research.md).
 
 ## Contents
 

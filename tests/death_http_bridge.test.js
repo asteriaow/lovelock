@@ -166,6 +166,10 @@ function createHarness({
         classes: ["TechShieldNumbers"],
         children: [techShieldValue],
     });
+    let objectiveMapChildren = [];
+    const objectivesMap = createPanel({ id: "ObjectivesMap", classes: [], children: [] });
+    const objectiveHealth = createPanel({ classes: ["objective_health"], children: [] });
+    const matchEnd = createPanel({ paneltype: "CitadelHudMatchEnd", classes: [], children: [] });
     const hudRoot = createPanel({
         id: "HudCore",
         children: [
@@ -178,6 +182,9 @@ function createHarness({
             gunElement,
             bulletShieldContainer,
             techShieldContainer,
+            objectivesMap,
+            objectiveHealth,
+            matchEnd,
         ],
     });
 
@@ -433,6 +440,58 @@ function createHarness({
             );
         },
         advanceCombatScan: () => advancePolls(3),
+        // pollObjectives only actually scans every OBJECTIVE_POLL_INTERVAL_POLLS
+        // (5) polls; 6 guarantees at least one scan boundary from any phase.
+        advanceObjectiveScan: () => advancePolls(6),
+        setObjectiveEnemyTeam: (n) => {
+            objectivesMap.setClasses(
+                n === null
+                    ? []
+                    : ["Team" + n + "IsEnemy", "Team" + (n === 1 ? 2 : 1) + "IsFriend"],
+            );
+        },
+        spawnObjective: (suffix, { team = 2, alive = true } = {}) => {
+            const id = "Team" + team + suffix;
+            let panel = objectiveMapChildren.find((c) => c.id === id);
+            if (!panel) {
+                panel = createPanel({
+                    id,
+                    classes: alive ? ["Alive", "Team" + team] : ["Team" + team],
+                });
+                objectiveMapChildren = [...objectiveMapChildren, panel];
+                objectivesMap.setChildren(objectiveMapChildren);
+            }
+            return panel;
+        },
+        setObjectiveAlive: (suffix, alive, { team = 2 } = {}) => {
+            const panel = objectiveMapChildren.find((c) => c.id === "Team" + team + suffix);
+            if (panel) {
+                panel.setClasses(alive ? ["Alive", "Team" + team] : ["Team" + team]);
+            }
+        },
+        setObjectiveHealth: ({ type = null, dead = false, weakened = false, friend = false } = {}) => {
+            const typeClass = {
+                base_guardian: "is_barracks_boss",
+                shrine: "is_shield_generator",
+                titan: "is_titan",
+                guardian: "is_tier1",
+                walker: "is_tier2",
+            }[type];
+            const classes = ["objective_health"];
+            if (typeClass) classes.push(typeClass);
+            if (dead) classes.push("is_dead");
+            if (weakened) classes.push("is_weakened");
+            if (friend) classes.push("friend");
+            objectiveHealth.setClasses(classes);
+        },
+        setMatchEnd: ({ shown = false, localTeam = null, victoryTeam = null, abandoned = false } = {}) => {
+            const classes = [];
+            if (shown) classes.push("ShowMatchEnd");
+            if (localTeam) classes.push("LocalPlayerTeam" + localTeam);
+            if (victoryTeam) classes.push("Team" + victoryTeam + "Victory");
+            if (abandoned) classes.push("MatchAbandoned");
+            matchEnd.setClasses(classes);
+        },
         invalidateContext: () => { contextValid = false; },
     };
 }
@@ -1218,6 +1277,122 @@ describe("death_http_bridge", () => {
         expect(harness.events("parry_success")).toEqual([
             expect.objectContaining({ detection: "enemy_stunned_after_parry" }),
         ]);
+    });
+
+    test("emits objective_guardian when an enemy Tier1 panel loses its Alive class", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.spawnObjective("Tier1_1", { alive: true });
+        harness.advanceObjectiveScan(); // baseline
+        harness.setObjectiveAlive("Tier1_1", false);
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_guardian")).toEqual([
+            expect.objectContaining({ detection: "objectives_map:tier1_alive_cleared" }),
+        ]);
+        expect(harness.events("objective_walker")).toHaveLength(0);
+    });
+
+    test("emits objective_walker for an enemy Tier2 panel, once, not on every scan", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(1);
+        harness.spawnObjective("Tier2_3", { team: 1, alive: true });
+        harness.advanceObjectiveScan();
+        harness.setObjectiveAlive("Tier2_3", false, { team: 1 });
+        harness.advanceObjectiveScan();
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_walker")).toHaveLength(1);
+    });
+
+    test("does not credit an objective already dead when the baseline is taken", () => {
+        const harness = createHarness();
+        harness.spawnObjective("Tier1_1", { alive: true });
+        harness.advanceObjectiveScan(); // enemy team unknown -> no baseline yet
+        harness.setObjectiveEnemyTeam(2);
+        harness.setObjectiveAlive("Tier1_1", false);
+        harness.advanceObjectiveScan(); // first real baseline: records it dead
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_guardian")).toHaveLength(0);
+    });
+
+    test("ignores a friendly structure being destroyed", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.spawnObjective("Tier1_1", { team: 1, alive: true }); // friendly side
+        harness.advanceObjectiveScan();
+        harness.setObjectiveAlive("Tier1_1", false, { team: 1 });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_guardian")).toHaveLength(0);
+    });
+
+    test("emits game_won when the enemy Core panel loses Alive", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.spawnObjective("Core", { alive: true });
+        harness.advanceObjectiveScan();
+        harness.setObjectiveAlive("Core", false);
+        harness.advanceObjectiveScan();
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("game_won")).toHaveLength(1);
+    });
+
+    test("emits game_won from the match-end screen on a local-team victory", () => {
+        const harness = createHarness();
+        harness.setMatchEnd({ shown: true, localTeam: 2, victoryTeam: 2 });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("game_won")).toEqual([
+            expect.objectContaining({ detection: "match_end:local_team_victory" }),
+        ]);
+    });
+
+    test("does not emit game_won when the other team wins", () => {
+        const harness = createHarness();
+        harness.setMatchEnd({ shown: true, localTeam: 1, victoryTeam: 2 });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("game_won")).toHaveLength(0);
+    });
+
+    test("emits objective_shrine when the boss bar shows a shrine as dead", () => {
+        const harness = createHarness();
+        harness.setObjectiveHealth({ type: "shrine" });
+        harness.advanceObjectiveScan();
+        harness.setObjectiveHealth({ type: "shrine", dead: true });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_shrine")).toEqual([
+            expect.objectContaining({ detection: "objective_health:is_shield_generator+is_dead" }),
+        ]);
+    });
+
+    test("emits objective_base_guardian for a dead barracks boss, but not a friendly one", () => {
+        const friendly = createHarness();
+        friendly.setObjectiveHealth({ type: "base_guardian", dead: true, friend: true });
+        friendly.advanceObjectiveScan();
+        expect(friendly.events("objective_base_guardian")).toHaveLength(0);
+
+        const enemy = createHarness();
+        enemy.setObjectiveHealth({ type: "base_guardian" });
+        enemy.advanceObjectiveScan();
+        enemy.setObjectiveHealth({ type: "base_guardian", dead: true });
+        enemy.advanceObjectiveScan();
+        expect(enemy.events("objective_base_guardian")).toHaveLength(1);
+    });
+
+    test("emits objective_patron_weakened when the Patron bar gains is_weakened", () => {
+        const harness = createHarness();
+        harness.setObjectiveHealth({ type: "titan" });
+        harness.advanceObjectiveScan();
+        harness.setObjectiveHealth({ type: "titan", weakened: true });
+        harness.advanceObjectiveScan();
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_patron_weakened")).toHaveLength(1);
     });
 
     test("damage_taken_intensity fires when the health band worsens, not when it recovers", () => {

@@ -103,6 +103,19 @@ struct PersistedTriggers {
     parry_success: PersistedTrigger,
     #[serde(default = "default_disabled_trigger")]
     parry_fail: PersistedTrigger,
+    // Objective triggers, added after schema 7.
+    #[serde(default = "default_disabled_trigger")]
+    objective_guardian: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    objective_walker: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    objective_base_guardian: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    objective_shrine: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    objective_patron_weakened: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    game_won: PersistedTrigger,
     #[serde(default = "default_disabled_trigger")]
     damage_taken_intensity: PersistedTrigger,
     // `damage_taken_intensity_curve` is the name the first (separate-trigger)
@@ -185,7 +198,7 @@ impl PersistedIntensityCurve {
 // `PersistedTriggerKind` variant and `soul_secure` field stay so an older
 // state file still deserializes, and it is dropped from the live order on
 // load. `DamageTakenIntensity` is likewise persisted-only.
-const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 14] = [
+const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 20] = [
     PersistedTriggerKind::LocalPlayerDeath,
     PersistedTriggerKind::LocalPlayerKill,
     PersistedTriggerKind::LocalPlayerAssist,
@@ -199,6 +212,12 @@ const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 14] = [
     PersistedTriggerKind::SoulDeny,
     PersistedTriggerKind::ParrySuccess,
     PersistedTriggerKind::ParryFail,
+    PersistedTriggerKind::ObjectiveGuardian,
+    PersistedTriggerKind::ObjectiveWalker,
+    PersistedTriggerKind::ObjectiveBaseGuardian,
+    PersistedTriggerKind::ObjectiveShrine,
+    PersistedTriggerKind::ObjectivePatronWeakened,
+    PersistedTriggerKind::GameWon,
     PersistedTriggerKind::DamageTakenIntensity,
 ];
 
@@ -226,6 +245,12 @@ enum PersistedTriggerKind {
     SoulSecure,
     ParrySuccess,
     ParryFail,
+    ObjectiveGuardian,
+    ObjectiveWalker,
+    ObjectiveBaseGuardian,
+    ObjectiveShrine,
+    ObjectivePatronWeakened,
+    GameWon,
     DamageTakenIntensity,
 }
 
@@ -246,6 +271,12 @@ impl From<TriggerKind> for PersistedTriggerKind {
             TriggerKind::SoulSecure => Self::SoulSecure,
             TriggerKind::ParrySuccess => Self::ParrySuccess,
             TriggerKind::ParryFail => Self::ParryFail,
+            TriggerKind::ObjectiveGuardian => Self::ObjectiveGuardian,
+            TriggerKind::ObjectiveWalker => Self::ObjectiveWalker,
+            TriggerKind::ObjectiveBaseGuardian => Self::ObjectiveBaseGuardian,
+            TriggerKind::ObjectiveShrine => Self::ObjectiveShrine,
+            TriggerKind::ObjectivePatronWeakened => Self::ObjectivePatronWeakened,
+            TriggerKind::GameWon => Self::GameWon,
             TriggerKind::DamageTakenIntensity => Self::DamageTakenIntensity,
         }
     }
@@ -268,6 +299,12 @@ impl From<PersistedTriggerKind> for TriggerKind {
             PersistedTriggerKind::SoulSecure => Self::SoulSecure,
             PersistedTriggerKind::ParrySuccess => Self::ParrySuccess,
             PersistedTriggerKind::ParryFail => Self::ParryFail,
+            PersistedTriggerKind::ObjectiveGuardian => Self::ObjectiveGuardian,
+            PersistedTriggerKind::ObjectiveWalker => Self::ObjectiveWalker,
+            PersistedTriggerKind::ObjectiveBaseGuardian => Self::ObjectiveBaseGuardian,
+            PersistedTriggerKind::ObjectiveShrine => Self::ObjectiveShrine,
+            PersistedTriggerKind::ObjectivePatronWeakened => Self::ObjectivePatronWeakened,
+            PersistedTriggerKind::GameWon => Self::GameWon,
             PersistedTriggerKind::DamageTakenIntensity => Self::DamageTakenIntensity,
         }
     }
@@ -468,6 +505,12 @@ impl Default for PersistedTriggers {
             soul_secure: disabled_trigger(vibrate.clone()),
             parry_success: disabled_trigger(vibrate.clone()),
             parry_fail: disabled_trigger(vibrate.clone()),
+            objective_guardian: disabled_trigger(vibrate.clone()),
+            objective_walker: disabled_trigger(vibrate.clone()),
+            objective_base_guardian: disabled_trigger(vibrate.clone()),
+            objective_shrine: disabled_trigger(vibrate.clone()),
+            objective_patron_weakened: disabled_trigger(vibrate.clone()),
+            game_won: disabled_trigger(vibrate.clone()),
             damage_taken_intensity: disabled_trigger(vibrate),
             damage_taken_curve: default_intensity_curve(),
             healing_given: None,
@@ -639,6 +682,14 @@ impl PersistedTriggers {
             soul_secure: PersistedTrigger::from_app(&triggers.soul_secure),
             parry_success: PersistedTrigger::from_app(&triggers.parry_success),
             parry_fail: PersistedTrigger::from_app(&triggers.parry_fail),
+            objective_guardian: PersistedTrigger::from_app(&triggers.objective_guardian),
+            objective_walker: PersistedTrigger::from_app(&triggers.objective_walker),
+            objective_base_guardian: PersistedTrigger::from_app(&triggers.objective_base_guardian),
+            objective_shrine: PersistedTrigger::from_app(&triggers.objective_shrine),
+            objective_patron_weakened: PersistedTrigger::from_app(
+                &triggers.objective_patron_weakened,
+            ),
+            game_won: PersistedTrigger::from_app(&triggers.game_won),
             damage_taken_intensity: PersistedTrigger::from_app(&triggers.damage_taken_intensity),
             damage_taken_curve: PersistedIntensityCurve::from_curve(
                 &triggers.damage_taken_curve,
@@ -671,6 +722,12 @@ impl PersistedTriggers {
             soul_secure: self.soul_secure.to_app(),
             parry_success: self.parry_success.to_app(),
             parry_fail: self.parry_fail.to_app(),
+            objective_guardian: self.objective_guardian.to_app(),
+            objective_walker: self.objective_walker.to_app(),
+            objective_base_guardian: self.objective_base_guardian.to_app(),
+            objective_shrine: self.objective_shrine.to_app(),
+            objective_patron_weakened: self.objective_patron_weakened.to_app(),
+            game_won: self.game_won.to_app(),
             damage_taken_intensity: self.damage_taken_intensity.to_app(),
             damage_taken_curve: self.damage_taken_curve.to_curve(),
             priority_order: self
@@ -704,6 +761,12 @@ impl PersistedTriggers {
         self.soul_secure.actions.vibrate.normalize();
         self.parry_success.actions.vibrate.normalize();
         self.parry_fail.actions.vibrate.normalize();
+        self.objective_guardian.actions.vibrate.normalize();
+        self.objective_walker.actions.vibrate.normalize();
+        self.objective_base_guardian.actions.vibrate.normalize();
+        self.objective_shrine.actions.vibrate.normalize();
+        self.objective_patron_weakened.actions.vibrate.normalize();
+        self.game_won.actions.vibrate.normalize();
         self.damage_taken_intensity.actions.vibrate.normalize();
         self.damage_taken_curve =
             PersistedIntensityCurve::from_curve(&self.damage_taken_curve.to_curve());
@@ -1493,6 +1556,12 @@ mod tests {
             TriggerKind::SoulDeny,
             TriggerKind::ParrySuccess,
             TriggerKind::ParryFail,
+            TriggerKind::ObjectiveGuardian,
+            TriggerKind::ObjectiveWalker,
+            TriggerKind::ObjectiveBaseGuardian,
+            TriggerKind::ObjectiveShrine,
+            TriggerKind::ObjectivePatronWeakened,
+            TriggerKind::GameWon,
         ];
         let persisted = PersistedState::from_app(&original);
         assert_eq!(
