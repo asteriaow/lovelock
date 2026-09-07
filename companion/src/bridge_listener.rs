@@ -1382,6 +1382,21 @@ fn log_rejected_bridge_record(line: &str) {
     };
     let event = value.get("event").and_then(serde_json::Value::as_str);
     let schema = value.get("schema").and_then(serde_json::Value::as_u64);
+    // Diagnostic events carry no trigger; the mod emits them so a live capture
+    // shows raw HUD shape while a detector is being pinned down. Log the whole
+    // payload at INFO instead of the terse "unsupported", so it lands in the
+    // companion log the user shares.
+    if event.is_some_and(|event| {
+        event.ends_with("_diag")
+            || matches!(event, "objective_feed_unclassified" | "soul_deny_diag" | "soul_gold_diag")
+    }) {
+        log::info!(
+            target: "companion::bridge_listener",
+            "bridge_diagnostic event={} payload={payload}",
+            event.unwrap_or("?")
+        );
+        return;
+    }
     let known_event = matches!(
         event,
         Some(
