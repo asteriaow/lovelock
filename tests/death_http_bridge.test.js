@@ -321,8 +321,6 @@ function createHarness({
             });
             player.BHasClass = (className) => className === "Dead" && dead;
         },
-        setKills: (value) => { killsLabel.setText(String(value)); },
-        setAssists: (value) => { assistsLabel.setText(String(value)); },
         setKillStreak: (value) => { killStreakLabel.setText(value === null ? null : String(value)); },
         setHealth: (value) => { healthLabel.setText(value === null ? null : String(value)); },
         setShield: (key, value) => {
@@ -400,12 +398,6 @@ function createHarness({
             });
             feedbackDisplay.setChildren([...feedbackDisplay.Children(), label]);
             return label;
-        },
-        removeFeedbackIndicator: (label) => {
-            label.setValid(false);
-            feedbackDisplay.setChildren(
-                feedbackDisplay.Children().filter((candidate) => candidate !== label),
-            );
         },
         setFeedbackIndicatorText: (label, amount) => { label.setText(String(amount)); },
         // A floating event indicator: `kind` is the category class ("deny" for
@@ -530,10 +522,6 @@ function createHarness({
             objectiveFeedRowPanels = [...objectiveFeedRowPanels, row];
             objectivesFeed.setChildren(objectiveFeedRowPanels);
             return row;
-        },
-        clearObjectiveFeed: () => {
-            objectiveFeedRowPanels = [];
-            objectivesFeed.setChildren([]);
         },
         setMatchEnd: ({ shown = false, localTeam = null, victoryTeam = null, abandoned = false } = {}) => {
             const classes = [];

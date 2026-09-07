@@ -15,7 +15,7 @@ use crate::action::{
     nearest_duration_step,
 };
 use crate::app::{
-    AbilityFilter, AbilityTriggerSettings, AmountTriggerSettings, AppState, DEFAULT_PROFILE_NAME,
+    AbilityFilter, AbilityTriggerSettings, AppState, DEFAULT_PROFILE_NAME,
     EffectProfile, TriggerKind, TriggerSettings, TriggerSettingsSet,
 };
 use crate::provider::{LovenseSetup, ProviderSettings, TargetId};
@@ -83,19 +83,31 @@ struct PersistedTriggers {
     death_hold_until_respawn: bool,
     #[serde(default = "default_true")]
     suppress_triggers_while_dead: bool,
-    // Added after schema 7, same rationale as the fields above.
-    #[serde(default = "default_damage_taken")]
-    damage_taken: PersistedAmountTrigger,
-    #[serde(default = "default_healing_received")]
-    healing_received: PersistedAmountTrigger,
+    // Added after schema 7. These three moved from a threshold + window pair
+    // to an intensity curve; `trigger_dropping_legacy_amount_fields` reads
+    // both the old `{trigger, threshold, window_seconds}` shape and the
+    // current flat `{enabled, actions}` one.
+    #[serde(
+        default = "default_disabled_trigger",
+        deserialize_with = "trigger_dropping_legacy_amount_fields"
+    )]
+    damage_taken: PersistedTrigger,
+    #[serde(
+        default = "default_disabled_trigger",
+        deserialize_with = "trigger_dropping_legacy_amount_fields"
+    )]
+    healing_received: PersistedTrigger,
     // Fire-once event triggers for supporting a teammate. Added after schema 7.
     #[serde(default = "default_disabled_trigger")]
     ally_healed: PersistedTrigger,
     #[serde(default = "default_disabled_trigger")]
     ally_shielded: PersistedTrigger,
-    // Combat-feedback triggers, added after schema 7.
-    #[serde(default = "default_damage_given")]
-    damage_given: PersistedAmountTrigger,
+    // Combat-feedback trigger, added after schema 7.
+    #[serde(
+        default = "default_disabled_trigger",
+        deserialize_with = "trigger_dropping_legacy_amount_fields"
+    )]
+    damage_given: PersistedTrigger,
     #[serde(default = "default_disabled_trigger")]
     soul_deny: PersistedTrigger,
     #[serde(default = "default_disabled_trigger")]
@@ -136,18 +148,39 @@ struct PersistedTriggers {
     // file that still has it loads; its enabled state migrates into
     // `ally_healed` in `to_app`, and it is never written back.
     #[serde(default, skip_serializing)]
-    healing_given: Option<PersistedAmountTrigger>,
+    healing_given: Option<LegacyHealingGivenTrigger>,
 }
 
-fn default_damage_taken() -> PersistedAmountTrigger {
-    PersistedAmountTrigger::new(200.0, 3.0)
+/// The pre-split `{ trigger, threshold, window_seconds }` shape of the retired
+/// "healing given" trigger. Read only, to carry an old file's enable state
+/// into `ally_healed`; the threshold/window numbers are dropped.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct LegacyHealingGivenTrigger {
+    trigger: PersistedTrigger,
 }
-fn default_healing_received() -> PersistedAmountTrigger {
-    PersistedAmountTrigger::new(150.0, 3.0)
+
+/// Deserializes `damage_taken` / `healing_received` / `damage_given`, which
+/// once stored `{ trigger: {enabled, actions}, threshold, window_seconds }`
+/// and now store a flat `{ enabled, actions }`. Both shapes read; the
+/// threshold/window numbers from an old file are dropped (those triggers run
+/// an intensity curve now).
+fn trigger_dropping_legacy_amount_fields<'de, D>(
+    deserializer: D,
+) -> Result<PersistedTrigger, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Flat(PersistedTrigger),
+        Nested { trigger: PersistedTrigger },
+    }
+    Ok(match Wire::deserialize(deserializer)? {
+        Wire::Flat(trigger) | Wire::Nested { trigger } => trigger,
+    })
 }
-fn default_damage_given() -> PersistedAmountTrigger {
-    PersistedAmountTrigger::new(400.0, 3.0)
-}
+
 fn default_disabled_trigger() -> PersistedTrigger {
     disabled_trigger(PersistedVibrate::default())
 }
@@ -323,44 +356,6 @@ impl From<PersistedTriggerKind> for TriggerKind {
     }
 }
 
-/// Mirrors [`PersistedAbilityTrigger`]'s shape for an amount-gated trigger:
-/// the underlying enable/action pair plus its own threshold and window.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PersistedAmountTrigger {
-    trigger: PersistedTrigger,
-    threshold: f32,
-    window_seconds: f32,
-}
-impl PersistedAmountTrigger {
-    fn new(threshold: f32, window_seconds: f32) -> Self {
-        Self {
-            trigger: disabled_trigger(PersistedVibrate::default()),
-            threshold,
-            window_seconds,
-        }
-    }
-    fn from_app(settings: &AmountTriggerSettings) -> Self {
-        Self {
-            trigger: PersistedTrigger::from_app(&settings.trigger),
-            threshold: settings.threshold,
-            window_seconds: settings.window_seconds,
-        }
-    }
-    fn to_app(&self) -> AmountTriggerSettings {
-        AmountTriggerSettings {
-            trigger: self.trigger.to_app(),
-            threshold: self.threshold,
-            window_seconds: self.window_seconds,
-        }
-    }
-    fn normalize(&mut self) {
-        self.trigger.actions.vibrate.normalize();
-        self.threshold = normalize_value(self.threshold, 0.0, 1_000_000.0, 0.0);
-        self.window_seconds = normalize_value(self.window_seconds, 0.1, 300.0, 3.0);
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PersistedTrigger {
@@ -509,11 +504,11 @@ impl Default for PersistedTriggers {
                 },
                 ability_filter: PersistedAbilityFilter::default(),
             },
-            damage_taken: default_damage_taken(),
-            healing_received: default_healing_received(),
+            damage_taken: disabled_trigger(vibrate.clone()),
+            healing_received: disabled_trigger(vibrate.clone()),
             ally_healed: disabled_trigger(vibrate.clone()),
             ally_shielded: disabled_trigger(vibrate.clone()),
-            damage_given: default_damage_given(),
+            damage_given: disabled_trigger(vibrate.clone()),
             soul_deny: disabled_trigger(vibrate.clone()),
             soul_secure: disabled_trigger(vibrate.clone()),
             parry_success: disabled_trigger(vibrate.clone()),
@@ -688,11 +683,11 @@ impl PersistedTriggers {
             ability_cooldown_ready: PersistedAbilityTrigger::from_app(
                 &triggers.ability_cooldown_ready,
             ),
-            damage_taken: PersistedAmountTrigger::from_app(&triggers.damage_taken),
-            healing_received: PersistedAmountTrigger::from_app(&triggers.healing_received),
+            damage_taken: PersistedTrigger::from_app(&triggers.damage_taken),
+            healing_received: PersistedTrigger::from_app(&triggers.healing_received),
             ally_healed: PersistedTrigger::from_app(&triggers.ally_healed),
             ally_shielded: PersistedTrigger::from_app(&triggers.ally_shielded),
-            damage_given: PersistedAmountTrigger::from_app(&triggers.damage_given),
+            damage_given: PersistedTrigger::from_app(&triggers.damage_given),
             soul_deny: PersistedTrigger::from_app(&triggers.soul_deny),
             soul_secure: PersistedTrigger::from_app(&triggers.soul_secure),
             parry_success: PersistedTrigger::from_app(&triggers.parry_success),
@@ -775,11 +770,11 @@ impl PersistedTriggers {
         self.ability_cooldown_ready.trigger.actions.vibrate.normalize();
         self.ability_used.ability_filter.normalize();
         self.ability_cooldown_ready.ability_filter.normalize();
-        self.damage_taken.normalize();
-        self.healing_received.normalize();
+        self.damage_taken.actions.vibrate.normalize();
+        self.healing_received.actions.vibrate.normalize();
         self.ally_healed.actions.vibrate.normalize();
         self.ally_shielded.actions.vibrate.normalize();
-        self.damage_given.normalize();
+        self.damage_given.actions.vibrate.normalize();
         self.soul_deny.actions.vibrate.normalize();
         self.soul_secure.actions.vibrate.normalize();
         self.parry_success.actions.vibrate.normalize();
@@ -798,7 +793,7 @@ impl PersistedTriggers {
         self.damage_given_curve =
             PersistedIntensityCurve::from_curve(&self.damage_given_curve.to_curve());
         if let Some(legacy) = &mut self.healing_given {
-            legacy.normalize();
+            legacy.trigger.actions.vibrate.normalize();
         }
         self.normalize_priority_order();
     }
@@ -1751,6 +1746,35 @@ mod tests {
             restored.damage_given_curve,
             crate::action::IntensityCurve::starter_damage_given()
         );
+    }
+
+    #[test]
+    fn an_old_amount_gated_trigger_still_loads_its_enable_and_action() {
+        // Pre-curve files stored these three as
+        // `{ trigger: { enabled, actions }, threshold, window_seconds }`.
+        let mut value =
+            serde_json::to_value(PersistedState::from_app(&AppState::default())).unwrap();
+        let flat = value["triggers"]["damage_taken"].clone();
+        value["triggers"]["damage_taken"] = serde_json::json!({
+            "trigger": {
+                "enabled": true,
+                "actions": flat["actions"].clone(),
+            },
+            "threshold": 275.0,
+            "window_seconds": 4.0,
+        });
+
+        let restored = serde_json::from_value::<PersistedState>(value)
+            .unwrap()
+            .normalized()
+            .unwrap()
+            .restore_app();
+
+        assert!(
+            restored.triggers.damage_taken.enabled,
+            "the nested enable flag carries over"
+        );
+        // The dropped threshold/window are gone; it is a plain TriggerSettings now.
     }
 
     #[test]

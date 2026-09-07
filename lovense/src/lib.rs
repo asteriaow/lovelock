@@ -84,10 +84,6 @@ pub enum Error {
     Decode { operation: &'static str },
     #[error("Lovense command was rejected: {message}")]
     CommandRejected { message: String },
-    #[error("no toy is connected to the Lovense app")]
-    NoToysAvailable,
-    #[error("requested toy is not connected to the Lovense app")]
-    ToyNotFound,
     #[error("vibration strength must be between 0 and 20")]
     InvalidStrength,
     #[error("vibration duration must be between 1 and 600 seconds")]
