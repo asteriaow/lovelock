@@ -1,6 +1,6 @@
 use crate::action::{
-    MAX_VIBRATE_DURATION, MAX_VIBRATE_STRENGTH, MIN_VIBRATE_DURATION, MIN_VIBRATE_STRENGTH,
-    VibrateActionSettings, VibrateMode,
+    MAX_VIBRATE_DURATION, MAX_VIBRATE_STRENGTH, MIN_VIBRATE_STRENGTH, VibrateActionSettings,
+    VibrateMode, duration_steps,
 };
 use crate::theme::ACCENT;
 use egui::{Color32, Ui};
@@ -35,22 +35,8 @@ pub fn draw_vibrate_settings_editor(ui: &mut Ui, vibrate: &mut VibrateActionSett
                 1.0,
                 "",
             );
-            slider_input(
-                ui,
-                "Minimum duration",
-                &mut vibrate.interval.minimum_duration_seconds,
-                MIN_VIBRATE_DURATION..=MAX_VIBRATE_DURATION,
-                1.0,
-                " s",
-            );
-            slider_input(
-                ui,
-                "Maximum duration",
-                &mut vibrate.interval.maximum_duration_seconds,
-                MIN_VIBRATE_DURATION..=MAX_VIBRATE_DURATION,
-                1.0,
-                " s",
-            );
+            duration_slider(ui, "Minimum duration", &mut vibrate.interval.minimum_duration_seconds);
+            duration_slider(ui, "Maximum duration", &mut vibrate.interval.maximum_duration_seconds);
         }
         VibrateMode::Fixed => {
             slider_input(
@@ -61,14 +47,7 @@ pub fn draw_vibrate_settings_editor(ui: &mut Ui, vibrate: &mut VibrateActionSett
                 1.0,
                 "",
             );
-            slider_input(
-                ui,
-                "Duration",
-                &mut vibrate.fixed.duration_seconds,
-                MIN_VIBRATE_DURATION..=MAX_VIBRATE_DURATION,
-                1.0,
-                " s",
-            );
+            duration_slider(ui, "Duration", &mut vibrate.fixed.duration_seconds);
         }
     }
     if vibrate.interval.minimum_strength > vibrate.interval.maximum_strength {
@@ -77,6 +56,50 @@ pub fn draw_vibrate_settings_editor(ui: &mut Ui, vibrate: &mut VibrateActionSett
     if vibrate.interval.minimum_duration_seconds > vibrate.interval.maximum_duration_seconds {
         vibrate.interval.maximum_duration_seconds = vibrate.interval.minimum_duration_seconds;
     }
+}
+
+/// A slider over the fixed duration grid (quarter seconds up to a second, then
+/// whole seconds). The slider moves in even steps across the grid indices
+/// rather than over raw seconds, since a duration resolves onto that exact grid
+/// anyway - see [`crate::action::duration_steps`].
+fn duration_slider(ui: &mut Ui, label: &str, value: &mut f32) {
+    let steps = duration_steps();
+    let last_index = steps.len().saturating_sub(1) as i32;
+    let mut index = steps
+        .iter()
+        .position(|step| (*step - *value).abs() < 0.01)
+        .unwrap_or_else(|| {
+            steps
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| (**a - *value).abs().total_cmp(&(**b - *value).abs()))
+                .map(|(index, _)| index)
+                .unwrap_or(0)
+        }) as i32;
+    ui.label(label);
+    ui.horizontal(|ui| {
+        ui.scope(|ui| {
+            ui.spacing_mut().slider_width = ui.available_width() * 0.62;
+            let visuals = ui.visuals_mut();
+            visuals.widgets.inactive.bg_fill = input_background();
+            visuals.widgets.hovered.bg_fill = input_background();
+            visuals.widgets.active.bg_fill = input_background();
+            visuals.selection.bg_fill = ACCENT;
+            ui.add(
+                egui::Slider::new(&mut index, 0..=last_index)
+                    .show_value(false)
+                    .trailing_fill(true),
+            );
+        });
+        let seconds = steps[index.clamp(0, last_index) as usize];
+        ui.weak(format!(
+            "{} s / {:.0} s",
+            crate::action::format_seconds_value(seconds),
+            MAX_VIBRATE_DURATION
+        ));
+    });
+    *value = steps[index.clamp(0, last_index) as usize];
+    ui.add_space(4.0);
 }
 
 fn input_background() -> Color32 {

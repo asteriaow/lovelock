@@ -2,7 +2,7 @@
 
 # Lovelock Companion
 
-Lovelock Companion is a desktop app that syncs local-player deaths, kills, assists, ability uses, and cooldown readiness in Deadlock to a Lovense toy over the local Standard API.
+Lovelock Companion is a desktop app that syncs local-player events in Deadlock to a Lovense toy over the local Standard API. It reacts to deaths, kills, assists, ability use and cooldowns, damage dealt and taken, healing received, healing or shielding a teammate, soul-orb denies, and parries. See [Triggers](#triggers) for the full list.
 
 ## !!! Required Deadlock mod !!!
 
@@ -39,11 +39,48 @@ You don't need to build anything or know how to code to use this. Here's everyth
 
 5. **Run `companion.exe`.** In the **Setup** tab, click **Test connection**. The default connection settings already work for the common case (Lovense Remote on the same PC), so you usually don't need to change anything. Once it's connected, optionally pick a specific toy (or leave it unselected to vibrate every connected toy).
 
-6. **Turn on your triggers.** Go to the **Effects** tab and enable whichever of Death, Kill, Assist, Ability use, and Cooldown ready you want (Death is on by default; the rest are opt-in). Adjust each trigger's vibration strength/duration to taste.
+6. **Turn on your triggers.** Go to the **Effects** tab and enable the ones you want. Death is on by default; every other trigger is opt-in. Adjust each trigger's vibration strength/duration to taste. The full list is under [Triggers](#triggers).
 
 7. **Launch Deadlock and play.** Lovelock Companion auto-detects the game and starts listening on its own. Just leave the companion window open in the background.
 
 If something's not connecting, check **Menu → Show logs** inside the companion for live diagnostics.
+
+## Triggers
+
+Every trigger is configured independently in the **Effects** tab, each with its
+own vibration profile (fixed strength/duration or a random interval). **Death**
+is enabled by default; everything else is opt-in. When several fire at once, an
+overlap-priority order (reorderable in the UI) decides which one drives the toy.
+
+| Trigger | Fires when | Notes |
+| --- | --- | --- |
+| **Death** | Your hero dies | Can hold the toy until you respawn instead of using a fixed duration. Ability/assist triggers can be suppressed while you're dead so a spectated teammate doesn't cut the effect short. |
+| **Kill** | Your kill-streak counter ticks up | Reads the on-screen kill-streak popup; no scoreboard (Tab) needed. |
+| **Assist** | The on-screen "KILL ASSIST" popup credits you | No scoreboard needed. |
+| **Ability use** | You cast an ability | Per-slot filter (applies across heroes); ability names shown when the mod reports them, numbered slots otherwise. |
+| **Cooldown ready** | An ability comes off cooldown | Also covers a charged ability restoring a charge. Same per-slot filter as Ability use. |
+| **Damage taken** | You take damage (health or shields) | Strength follows an intensity curve: a heavier beating over a rolling window drives the toy harder. |
+| **Healing received** | Your health/shields go up | Amount-based: a rolling-window sum gated by a threshold you set. |
+| **Healed an ally** | You restore a teammate's health | From the ally-support impact popup. |
+| **Shielded an ally** | You give a teammate a barrier/shield | From the ally-support impact popup. |
+| **Damage given** | The game shows floating damage numbers for your hits | Amount-based: rolling-window sum gated by a threshold. |
+| **Soul orb deny** | You deny an enemy's soul orb | Reads the dedicated `deny` combat indicator. |
+| **Parry success** | You throw a parry and it connects (an enemy is stunned within a short window, and you aren't) | See caveats below. |
+| **Got parried** | You get stunned right after starting a parry | Detected from your crosshair's stunned state. |
+
+Copy a vibration profile between triggers with the explicit **Copy** control
+(it copies only the active profile, not enablement or filters). Setup, the
+Lovense connection, all vibration profiles, and ability filters are saved to
+your OS user config directory between runs.
+
+**Parry / soul-orb caveats.** Deadlock's HUD has no "parry landed" signal, so
+**Parry success** is inferred: you threw a parry and, within ~1 s, an enemy
+shows the stunned state while you do not. An unrelated ability stun landing in
+that window is the one false-positive path; a parry that hits nothing fires
+nothing. **Soul orb secure** is not a trigger: the HUD shows one flat soul
+number for every soul gain, so "you shot the orb" can't be told from a
+walk-over. Details in
+[`docs/parry-and-soul-deny-research.md`](docs/parry-and-soul-deny-research.md).
 
 ## Contents
 
@@ -73,12 +110,12 @@ On Windows, `build_and_run.bat` builds Lovelock Companion in debug mode and laun
 
 In **Setup**, enter the Lovense Connect/Remote domain and HTTP port, test the connection, and optionally pick a specific toy (leave unselected to vibrate every connected toy).
 
-In **Effects**, configure Death, Kill, Assist, Ability use, and Cooldown ready independently. Each trigger has its own vibration profile (fixed strength/duration, or a random interval). Ability-use and cooldown-ready also have independent positional-slot filters that apply across heroes; ability names appear when the addon reports them, with numbered slots as the fallback. Use the explicit Copy control to copy only the active vibration profile between triggers without changing enablement or ability selection. Local-player death is enabled by default, while Kill, Assist, and both ability triggers are opt-in. Cooldown ready covers both a normal cooldown finishing and a charged ability restoring a charge. Kill fires from the local player's live kill-streak counter and Assist fires from the on-screen kill-assist popup, both of which update without needing the scoreboard (Tab) open.
+In **Effects**, configure each trigger independently; see [Triggers](#triggers) for the full list and what each one reacts to. Every trigger has its own vibration profile (fixed strength/duration, or a random interval). Ability-use and cooldown-ready also have independent positional-slot filters that apply across heroes; ability names appear when the addon reports them, with numbered slots as the fallback. Use the explicit Copy control to copy only the active vibration profile between triggers without changing enablement or ability selection.
 
 In **Game connection**, Lovelock Companion automatically resumes a saved `console.log` path or auto-detects Deadlock and starts the listener at launch. Use **Auto-detect** and **Start/Restart listener** for diagnostics, retry, or a manual path override. Deadlock must run with `-condebug` so the log is written.
 On Windows releases Lovelock Companion uses the GUI application subsystem, so launching it from Explorer does not open a command window. On Windows and Linux, open **Menu → Show logs** for selectable startup and live diagnostics. Logs are retained only in memory for the current run and are not written to a persistent log file.
 
-Lovelock Companion remembers your setup, including the Lovense connection, all five vibration profiles, and ability filters, in your OS user config directory. Ability names are runtime diagnostics and are not saved.
+Lovelock Companion remembers your setup, including the Lovense connection, every trigger's vibration profile, the overlap-priority order, and ability filters, in your OS user config directory. Ability names are runtime diagnostics and are not saved.
 
 ## Provider/action architecture
 

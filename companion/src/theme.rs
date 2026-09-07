@@ -27,11 +27,14 @@ pub const BASE: Color32 = Color32::from_rgb(30, 22, 33);
 pub const PANEL: Color32 = Color32::from_rgb(38, 28, 42);
 pub const CARD: Color32 = Color32::from_rgb(46, 33, 49);
 pub const CARD_RAISED: Color32 = Color32::from_rgb(56, 40, 59);
-pub const STROKE: Color32 = Color32::from_rgb(78, 55, 74);
+/// A hairline border: quiet enough to group without drawing the eye, so the
+/// content does the talking.
+pub const STROKE: Color32 = Color32::from_rgb(70, 52, 72);
 pub const TEXT: Color32 = Color32::from_rgb(248, 240, 245);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(196, 180, 194);
-/// Dot color for the subtle polka-dot background texture.
-pub const DOT: Color32 = Color32::from_rgb(70, 50, 66);
+/// Dot color for the polka-dot background texture. Kept only a hair above
+/// [`BASE`] so the pattern reads as a faint grain, never as content.
+pub const DOT: Color32 = Color32::from_rgb(46, 34, 50);
 
 pub fn apply(ctx: &Context) {
     let mut visuals = Visuals::dark();
@@ -73,8 +76,30 @@ pub fn apply(ctx: &Context) {
         &mut visuals.widgets.active,
         &mut visuals.widgets.open,
     ] {
-        widget.corner_radius = CornerRadius::same(6);
+        widget.corner_radius = CornerRadius::same(8);
+        // Calmer pointer feel: controls don't swell on hover, they just
+        // re-tint. One less thing twitching under the cursor.
+        widget.expansion = 0.0;
     }
+
+    // Consistent rounding across the chrome, and drop shadows that lift
+    // popovers off the page without the heavy default vignette.
+    visuals.window_corner_radius = CornerRadius::same(10);
+    visuals.menu_corner_radius = CornerRadius::same(10);
+    visuals.weak_text_alpha = 0.65;
+    visuals.disabled_alpha = 0.45;
+    visuals.window_shadow = egui::Shadow {
+        offset: [0, 6],
+        blur: 24,
+        spread: 0,
+        color: Color32::from_black_alpha(80),
+    };
+    visuals.popup_shadow = egui::Shadow {
+        offset: [0, 4],
+        blur: 16,
+        spread: 0,
+        color: Color32::from_black_alpha(70),
+    };
 
     ctx.set_theme(egui::ThemePreference::Dark);
     ctx.set_visuals_of(egui::Theme::Dark, visuals);
@@ -82,7 +107,7 @@ pub fn apply(ctx: &Context) {
     ctx.style_mut_of(egui::Theme::Dark, |style| {
         style.text_styles.insert(
             TextStyle::Heading,
-            FontId::new(24.0, egui::FontFamily::Proportional),
+            FontId::new(23.0, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             TextStyle::Body,
@@ -94,14 +119,27 @@ pub fn apply(ctx: &Context) {
         );
         style.text_styles.insert(
             TextStyle::Small,
-            FontId::new(13.5, egui::FontFamily::Proportional),
+            FontId::new(13.0, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             TextStyle::Monospace,
-            FontId::new(14.5, egui::FontFamily::Monospace),
+            FontId::new(14.0, egui::FontFamily::Monospace),
         );
-        style.spacing.item_spacing = Vec2::new(8.0, 8.0);
-        style.spacing.button_padding = Vec2::new(12.0, 8.0);
+
+        // One spacing scale, applied deliberately: an 8px grid for gaps and
+        // button padding, a slightly taller minimum hit target, indents that
+        // line up with the card inner margin, and a slimmer scrollbar.
+        let spacing = &mut style.spacing;
+        spacing.item_spacing = Vec2::new(8.0, 8.0);
+        spacing.button_padding = Vec2::new(12.0, 7.0);
+        spacing.interact_size = Vec2::new(48.0, 26.0);
+        spacing.indent = 20.0;
+        spacing.window_margin = egui::Margin::same(12);
+        spacing.menu_margin = egui::Margin::same(8);
+        spacing.scroll = egui::style::ScrollStyle {
+            bar_width: 8.0,
+            ..egui::style::ScrollStyle::solid()
+        };
     });
 }
 
@@ -137,21 +175,21 @@ pub fn card(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::group(ui.style())
         .fill(CARD)
         .stroke(Stroke::new(1.0, STROKE))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(14.0)
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(16.0)
 }
 
 /// A slightly brighter card with a soft pink glow, used for the currently
 /// selected trigger row.
 pub fn card_selected(ui: &egui::Ui) -> egui::Frame {
     card(ui)
-        .fill(ACCENT_DIM.gamma_multiply(0.9))
+        .fill(Color32::from_rgb(64, 42, 62))
         .stroke(Stroke::new(1.5, ACCENT))
         .shadow(egui::Shadow {
-            offset: [0, 0],
-            blur: 18,
-            spread: 1,
-            color: ACCENT.gamma_multiply(0.35),
+            offset: [0, 2],
+            blur: 14,
+            spread: 0,
+            color: ACCENT.gamma_multiply(0.22),
         })
 }
 
@@ -177,14 +215,15 @@ impl BadgeTone {
 pub fn badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone) {
     let color = tone.color();
     egui::Frame::NONE
-        .fill(color.gamma_multiply(0.18))
-        .stroke(Stroke::new(1.0, color))
+        .fill(color.gamma_multiply(0.16))
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.55)))
         .corner_radius(CornerRadius::same(255))
-        .inner_margin(egui::Margin::symmetric(10, 4))
+        .inner_margin(egui::Margin::symmetric(9, 3))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(7.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 3.5, color);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(6.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 3.0, color);
                 ui.colored_label(color, text);
             });
         });
@@ -193,14 +232,14 @@ pub fn badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone) {
 /// Paints `text` in the normal body label style, shifted down by `offset`
 /// pixels. The space reserved in the layout is the plain, un-shifted label
 /// size, so sibling widgets in the same horizontal row lay out and
-/// vertically center exactly as if this were a normal `ui.label` — only the
+/// vertically center exactly as if this were a normal `ui.label`. Only the
 /// painted glyphs move, which keeps the nudge predictable regardless of
 /// what else is in the row.
 pub fn label_nudged_down(ui: &mut egui::Ui, text: &str, offset: f32) -> egui::Response {
     colored_text_nudged_down(ui, text, ui.visuals().text_color(), offset)
 }
 
-/// Same as [`label_nudged_down`], but with an explicit color — used to nudge
+/// Same as [`label_nudged_down`], but with an explicit color, used to nudge
 /// icon glyphs (which are painted via `colored_label`) so they can be
 /// vertically matched to an adjacent heading without disturbing layout.
 pub fn colored_text_nudged_down(
@@ -217,9 +256,76 @@ pub fn colored_text_nudged_down(
     response
 }
 
+/// A checkbox drawn as a radio-style dot instead of egui's tick-in-a-box: a
+/// filled accent disc with a small inset dot when on, a hollow ring when off.
+/// The whole dot-plus-label row toggles `checked`; the returned response
+/// reports `.changed()` and takes `.on_hover_text(..)` like `ui.checkbox`.
+pub fn dot_checkbox(ui: &mut egui::Ui, checked: &mut bool, label: &str) -> egui::Response {
+    let id = ui.id().with(("dot_checkbox", label));
+    let laid_out = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (dot_rect, _) =
+            ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
+        ui.label(egui::RichText::new(label).color(TEXT));
+        dot_rect
+    });
+    let dot_rect = laid_out.inner;
+    let mut response = ui.interact(laid_out.response.rect, id, egui::Sense::click());
+    if response.clicked() {
+        *checked = !*checked;
+        response.mark_changed();
+    }
+
+    let center = dot_rect.center();
+    let radius = 8.0;
+    let (fill, ring) = if *checked {
+        (ACCENT, ACCENT_BRIGHT)
+    } else if response.hovered() {
+        (CARD_RAISED, ACCENT)
+    } else {
+        (CARD_RAISED, STROKE)
+    };
+    let painter = ui.painter();
+    painter.circle_filled(center, radius, fill);
+    painter.circle_stroke(center, radius - 0.5, Stroke::new(1.4, ring));
+    if *checked {
+        painter.circle_filled(center, radius * 0.34, PANEL);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
 /// A round icon badge (colored ring + centered glyph), used for trigger rows.
 pub fn icon_badge(ui: &mut egui::Ui, glyph: &str, active: bool) -> egui::Response {
     icon_badge_sized(ui, glyph, active, 36.0)
+}
+
+/// A drag-grip glyph (six dots) for a reorderable row. Allocated in a
+/// fixed box the same height as [`icon_badge`] and painted `CENTER_CENTER`,
+/// so it lines up with the badge and stays vertically centered no matter
+/// how tall the rest of the row grows.
+pub fn drag_handle(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(22.0, 36.0), egui::Sense::hover());
+    // Quiet at rest, accent only when the cursor is on it: a grip shouldn't
+    // compete with the row's own content for attention.
+    let color = if response.hovered() {
+        ACCENT
+    } else {
+        TEXT_DIM.gamma_multiply(0.7)
+    };
+    ui.painter().text(
+        glyph_center(rect.center(), 18.0),
+        egui::Align2::CENTER_CENTER,
+        egui_phosphor::regular::DOTS_SIX_VERTICAL,
+        FontId::proportional(18.0),
+        color,
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    response
 }
 
 /// Same as [`icon_badge`], with an explicit diameter (used for the larger
@@ -233,7 +339,7 @@ pub fn icon_badge_sized(ui: &mut egui::Ui, glyph: &str, active: bool, size: f32)
         (CARD_RAISED, STROKE, TEXT_DIM)
     };
     painter.circle_filled(rect.center(), size / 2.0, fill);
-    painter.circle_stroke(rect.center(), size / 2.0 - 0.5, Stroke::new(1.5, ring));
+    painter.circle_stroke(rect.center(), size / 2.0 - 0.5, Stroke::new(1.4, ring));
     painter.text(
         glyph_center(rect.center(), size * 0.5),
         egui::Align2::CENTER_CENTER,
@@ -242,8 +348,8 @@ pub fn icon_badge_sized(ui: &mut egui::Ui, glyph: &str, active: bool, size: f32)
         glyph_color,
     );
     if active {
-        let accent_pos = rect.center() + Vec2::splat(size * 0.32);
-        let accent_size = (size * 0.22).max(7.0);
+        let accent_pos = rect.center() + Vec2::splat(size * 0.30);
+        let accent_size = (size * 0.22).max(6.5);
         painter.circle_filled(accent_pos, accent_size, PANEL);
         painter.text(
             glyph_center(accent_pos, accent_size),
@@ -274,8 +380,8 @@ pub fn heart_bullet(ui: &mut egui::Ui) {
 /// rect, purely decorative and drawn behind whatever is added afterward.
 pub fn paint_dotted_background(ui: &egui::Ui) {
     let rect = ui.max_rect();
-    let spacing = 26.0;
-    let radius = 1.6;
+    let spacing = 28.0;
+    let radius = 1.3;
     let painter = ui.painter();
     let start_x = (rect.left() / spacing).floor() * spacing;
     let start_y = (rect.top() / spacing).floor() * spacing;
@@ -303,18 +409,20 @@ pub fn flourish(ui: &mut egui::Ui) {
     );
     let painter = ui.painter();
     let mid = rect.center();
-    let gap = 10.0;
+    let gap = 12.0;
     let segments = 24;
     for side in [-1.0_f32, 1.0] {
         for i in 0..segments {
             let t0 = i as f32 / segments as f32;
             let t1 = (i + 1) as f32 / segments as f32;
-            let fade = 1.0 - t1;
+            // Ease the fade so the line dissolves smoothly toward the edges
+            // instead of stepping down linearly.
+            let fade = (1.0 - t1).max(0.0).powf(1.7);
             let x0 = mid.x + side * (gap + t0 * (rect.width() / 2.0 - gap));
             let x1 = mid.x + side * (gap + t1 * (rect.width() / 2.0 - gap));
             painter.line_segment(
                 [egui::pos2(x0, mid.y), egui::pos2(x1, mid.y)],
-                Stroke::new(1.0, ACCENT.gamma_multiply(fade.max(0.0) * 0.7)),
+                Stroke::new(0.9, ACCENT.gamma_multiply(fade * 0.55)),
             );
         }
     }
@@ -333,7 +441,7 @@ pub fn sparkle(ui: &mut egui::Ui, size: f32) {
         egui::Label::new(
             egui::RichText::new(egui_phosphor::regular::SPARKLE)
                 .size(size)
-                .color(ACCENT_BRIGHT.gamma_multiply(0.8)),
+                .color(ACCENT_BRIGHT.gamma_multiply(0.65)),
         )
         .selectable(false),
     );

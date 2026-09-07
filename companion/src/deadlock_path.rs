@@ -518,10 +518,8 @@ fn windows_steam_roots() -> Result<Vec<PathBuf>, DetectionError> {
         }
     }
 
-    if roots.is_empty() {
-        if let Some(error) = meaningful_error {
-            return Err(error);
-        }
+    if roots.is_empty() && let Some(error) = meaningful_error {
+        return Err(error);
     }
     Ok(roots)
 }
@@ -532,6 +530,19 @@ mod tests {
     use std::fs::File;
     use std::time::{Duration, UNIX_EPOCH};
     use tempfile::TempDir;
+
+    /// Sets a file's modified time. The file must be opened for writing:
+    /// Windows' `SetFileTime` needs `FILE_WRITE_ATTRIBUTES`, which a read-only
+    /// `File::open` handle does not carry, so it fails there with "Access is
+    /// denied".
+    fn set_modified(path: &Path, time: SystemTime) {
+        File::options()
+            .write(true)
+            .open(path)
+            .expect("open log for mtime update")
+            .set_modified(time)
+            .expect("set log mtime");
+    }
 
     struct TestSteam {
         _temp: TempDir,
@@ -740,14 +751,8 @@ mod tests {
         let steam = TestSteam::new(2);
         let older = steam.install(0, "DeadlockPrimary", true);
         let newer = steam.install(1, "DeadlockSecondary", true);
-        File::open(&older)
-            .expect("open older log")
-            .set_modified(UNIX_EPOCH + Duration::from_secs(10))
-            .expect("set older timestamp");
-        File::open(&newer)
-            .expect("open newer log")
-            .set_modified(UNIX_EPOCH + Duration::from_secs(20))
-            .expect("set newer timestamp");
+        set_modified(&older, UNIX_EPOCH + Duration::from_secs(10));
+        set_modified(&newer, UNIX_EPOCH + Duration::from_secs(20));
 
         assert_eq!(
             detect_in_roots(std::slice::from_ref(&steam.root)),
@@ -761,14 +766,8 @@ mod tests {
         let first = steam.install(0, "DeadlockPrimary", true);
         let second = steam.install(1, "DeadlockSecondary", true);
         let timestamp = UNIX_EPOCH + Duration::from_secs(10);
-        File::open(&first)
-            .expect("open first log")
-            .set_modified(timestamp)
-            .expect("set first timestamp");
-        File::open(&second)
-            .expect("open second log")
-            .set_modified(timestamp)
-            .expect("set second timestamp");
+        set_modified(&first, timestamp);
+        set_modified(&second, timestamp);
         let mut expected = vec![first, second];
         expected.sort();
 

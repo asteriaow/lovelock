@@ -9,11 +9,13 @@ use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 use crate::action::{
-    MAX_VIBRATE_DURATION, MAX_VIBRATE_STRENGTH, MIN_VIBRATE_DURATION, MIN_VIBRATE_STRENGTH,
-    VibrateActionSettings, VibrateFixedSettings, VibrateIntervalSettings, VibrateMode,
+    IntensityCurve, IntensityPoint, MAX_VIBRATE_DURATION, MAX_VIBRATE_STRENGTH,
+    MIN_VIBRATE_DURATION, MIN_VIBRATE_STRENGTH, VibrateActionSettings, VibrateFixedSettings,
+    VibrateIntervalSettings, VibrateMode, nearest_duration_step,
 };
 use crate::app::{
-    AbilityFilter, AbilityTriggerSettings, AppState, TriggerSettings, TriggerSettingsSet,
+    AbilityFilter, AbilityTriggerSettings, AmountTriggerSettings, AppState, DEFAULT_PROFILE_NAME,
+    EffectProfile, TriggerKind, TriggerSettings, TriggerSettingsSet,
 };
 use crate::provider::{LovenseSetup, ProviderSettings, TargetId};
 
@@ -26,8 +28,36 @@ pub(crate) struct PersistedState {
     schema_version: u32,
     provider_settings: PersistedProviderSettings,
     preferred_target: Option<PersistedTarget>,
+    // `triggers` / `resting_strength` are the active profile's effects, kept
+    // at the top level so a state file from before profiles existed still
+    // loads (it becomes the sole "Default" profile). `profiles` is the real
+    // list once written; when it is empty the top-level pair is used instead.
     triggers: PersistedTriggers,
     log_path: String,
+    // Added after schema 7; older state files fall back to 0 (disabled) rather
+    // than forcing a schema bump that would discard the rest of the settings.
+    #[serde(default)]
+    resting_strength: u8,
+    // Added after schema 7. Older files have no `profiles` key and fall back
+    // to a single profile synthesized from the fields above.
+    #[serde(default)]
+    profiles: Vec<PersistedProfile>,
+    #[serde(default)]
+    active_profile: usize,
+}
+
+/// One named, switchable bundle of effect settings on disk.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedProfile {
+    name: String,
+    triggers: PersistedTriggers,
+    #[serde(default)]
+    resting_strength: u8,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -43,6 +73,242 @@ struct PersistedTriggers {
     local_player_assist: PersistedTrigger,
     ability_used: PersistedAbilityTrigger,
     ability_cooldown_ready: PersistedAbilityTrigger,
+    // Added after schema 7. State files written before it simply fall back to
+    // the default order, so no schema bump (which would discard the rest of a
+    // user's settings) is needed.
+    #[serde(default = "default_priority_order")]
+    priority_order: Vec<PersistedTriggerKind>,
+    #[serde(default = "default_true")]
+    death_hold_until_respawn: bool,
+    #[serde(default = "default_true")]
+    suppress_triggers_while_dead: bool,
+    // Added after schema 7, same rationale as the fields above.
+    #[serde(default = "default_damage_taken")]
+    damage_taken: PersistedAmountTrigger,
+    #[serde(default = "default_healing_received")]
+    healing_received: PersistedAmountTrigger,
+    // Fire-once event triggers for supporting a teammate. Added after schema 7.
+    #[serde(default = "default_disabled_trigger")]
+    ally_healed: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    ally_shielded: PersistedTrigger,
+    // Combat-feedback triggers, added after schema 7.
+    #[serde(default = "default_damage_given")]
+    damage_given: PersistedAmountTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    soul_deny: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    soul_secure: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    parry_success: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    parry_fail: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
+    damage_taken_intensity: PersistedTrigger,
+    // `damage_taken_intensity_curve` is the name the first (separate-trigger)
+    // version wrote; accepted as an alias so that file keeps its curve.
+    #[serde(
+        default = "default_intensity_curve",
+        alias = "damage_taken_intensity_curve"
+    )]
+    damage_taken_curve: PersistedIntensityCurve,
+    // The earlier amount-gated "healing given" trigger. Deserialized only so a
+    // file that still has it loads; its enabled state migrates into
+    // `ally_healed` in `to_app`, and it is never written back.
+    #[serde(default, skip_serializing)]
+    healing_given: Option<PersistedAmountTrigger>,
+}
+
+fn default_damage_taken() -> PersistedAmountTrigger {
+    PersistedAmountTrigger::new(200.0, 3.0)
+}
+fn default_healing_received() -> PersistedAmountTrigger {
+    PersistedAmountTrigger::new(150.0, 3.0)
+}
+fn default_damage_given() -> PersistedAmountTrigger {
+    PersistedAmountTrigger::new(400.0, 3.0)
+}
+fn default_disabled_trigger() -> PersistedTrigger {
+    disabled_trigger(PersistedVibrate::default())
+}
+fn default_intensity_curve() -> PersistedIntensityCurve {
+    PersistedIntensityCurve::from_curve(&IntensityCurve::default())
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedIntensityPoint {
+    damage: f32,
+    level: f32,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedIntensityCurve {
+    window_seconds: f32,
+    pulse_seconds: f32,
+    points: Vec<PersistedIntensityPoint>,
+}
+impl PersistedIntensityCurve {
+    fn from_curve(curve: &IntensityCurve) -> Self {
+        Self {
+            window_seconds: curve.window_seconds,
+            pulse_seconds: curve.pulse_seconds,
+            points: curve
+                .points
+                .iter()
+                .map(|point| PersistedIntensityPoint {
+                    damage: point.damage,
+                    level: point.level,
+                })
+                .collect(),
+        }
+    }
+    fn to_curve(&self) -> IntensityCurve {
+        let mut curve = IntensityCurve {
+            window_seconds: self.window_seconds,
+            pulse_seconds: self.pulse_seconds,
+            points: self
+                .points
+                .iter()
+                .map(|point| IntensityPoint {
+                    damage: point.damage,
+                    level: point.level,
+                })
+                .collect(),
+        };
+        curve.normalize();
+        curve
+    }
+}
+
+// `SoulSecure` is retired (see `PRIORITY_ORDER_DEFAULT` in app.rs); its
+// `PersistedTriggerKind` variant and `soul_secure` field stay so an older
+// state file still deserializes, and it is dropped from the live order on
+// load. `DamageTakenIntensity` is likewise persisted-only.
+const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 14] = [
+    PersistedTriggerKind::LocalPlayerDeath,
+    PersistedTriggerKind::LocalPlayerKill,
+    PersistedTriggerKind::LocalPlayerAssist,
+    PersistedTriggerKind::AbilityUsed,
+    PersistedTriggerKind::AbilityCooldownReady,
+    PersistedTriggerKind::DamageTaken,
+    PersistedTriggerKind::HealingReceived,
+    PersistedTriggerKind::AllyHealed,
+    PersistedTriggerKind::AllyShielded,
+    PersistedTriggerKind::DamageGiven,
+    PersistedTriggerKind::SoulDeny,
+    PersistedTriggerKind::ParrySuccess,
+    PersistedTriggerKind::ParryFail,
+    PersistedTriggerKind::DamageTakenIntensity,
+];
+
+fn default_priority_order() -> Vec<PersistedTriggerKind> {
+    DEFAULT_PRIORITY_ORDER.to_vec()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PersistedTriggerKind {
+    LocalPlayerDeath,
+    LocalPlayerKill,
+    LocalPlayerAssist,
+    AbilityUsed,
+    AbilityCooldownReady,
+    DamageTaken,
+    HealingReceived,
+    // `healing_given` is the pre-split name; a priority order saved with it
+    // reads back as this slot.
+    #[serde(alias = "healing_given")]
+    AllyHealed,
+    AllyShielded,
+    DamageGiven,
+    SoulDeny,
+    SoulSecure,
+    ParrySuccess,
+    ParryFail,
+    DamageTakenIntensity,
+}
+
+impl From<TriggerKind> for PersistedTriggerKind {
+    fn from(kind: TriggerKind) -> Self {
+        match kind {
+            TriggerKind::Death => Self::LocalPlayerDeath,
+            TriggerKind::Kill => Self::LocalPlayerKill,
+            TriggerKind::Assist => Self::LocalPlayerAssist,
+            TriggerKind::AbilityUse => Self::AbilityUsed,
+            TriggerKind::AbilityCooldownReady => Self::AbilityCooldownReady,
+            TriggerKind::DamageTaken => Self::DamageTaken,
+            TriggerKind::HealingReceived => Self::HealingReceived,
+            TriggerKind::AllyHealed => Self::AllyHealed,
+            TriggerKind::AllyShielded => Self::AllyShielded,
+            TriggerKind::DamageGiven => Self::DamageGiven,
+            TriggerKind::SoulDeny => Self::SoulDeny,
+            TriggerKind::SoulSecure => Self::SoulSecure,
+            TriggerKind::ParrySuccess => Self::ParrySuccess,
+            TriggerKind::ParryFail => Self::ParryFail,
+            TriggerKind::DamageTakenIntensity => Self::DamageTakenIntensity,
+        }
+    }
+}
+
+impl From<PersistedTriggerKind> for TriggerKind {
+    fn from(kind: PersistedTriggerKind) -> Self {
+        match kind {
+            PersistedTriggerKind::LocalPlayerDeath => Self::Death,
+            PersistedTriggerKind::LocalPlayerKill => Self::Kill,
+            PersistedTriggerKind::LocalPlayerAssist => Self::Assist,
+            PersistedTriggerKind::AbilityUsed => Self::AbilityUse,
+            PersistedTriggerKind::AbilityCooldownReady => Self::AbilityCooldownReady,
+            PersistedTriggerKind::DamageTaken => Self::DamageTaken,
+            PersistedTriggerKind::HealingReceived => Self::HealingReceived,
+            PersistedTriggerKind::AllyHealed => Self::AllyHealed,
+            PersistedTriggerKind::AllyShielded => Self::AllyShielded,
+            PersistedTriggerKind::DamageGiven => Self::DamageGiven,
+            PersistedTriggerKind::SoulDeny => Self::SoulDeny,
+            PersistedTriggerKind::SoulSecure => Self::SoulSecure,
+            PersistedTriggerKind::ParrySuccess => Self::ParrySuccess,
+            PersistedTriggerKind::ParryFail => Self::ParryFail,
+            PersistedTriggerKind::DamageTakenIntensity => Self::DamageTakenIntensity,
+        }
+    }
+}
+
+/// Mirrors [`PersistedAbilityTrigger`]'s shape for an amount-gated trigger:
+/// the underlying enable/action pair plus its own threshold and window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedAmountTrigger {
+    trigger: PersistedTrigger,
+    threshold: f32,
+    window_seconds: f32,
+}
+impl PersistedAmountTrigger {
+    fn new(threshold: f32, window_seconds: f32) -> Self {
+        Self {
+            trigger: disabled_trigger(PersistedVibrate::default()),
+            threshold,
+            window_seconds,
+        }
+    }
+    fn from_app(settings: &AmountTriggerSettings) -> Self {
+        Self {
+            trigger: PersistedTrigger::from_app(&settings.trigger),
+            threshold: settings.threshold,
+            window_seconds: settings.window_seconds,
+        }
+    }
+    fn to_app(&self) -> AmountTriggerSettings {
+        AmountTriggerSettings {
+            trigger: self.trigger.to_app(),
+            threshold: self.threshold,
+            window_seconds: self.window_seconds,
+        }
+    }
+    fn normalize(&mut self) {
+        self.trigger.actions.vibrate.normalize();
+        self.threshold = normalize_value(self.threshold, 0.0, 1_000_000.0, 0.0);
+        self.window_seconds = normalize_value(self.window_seconds, 0.1, 300.0, 3.0);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,7 +350,7 @@ impl Default for PersistedAbilityFilter {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PersistedProviderSettings {
     lovense: PersistedLovenseSetup,
@@ -140,7 +406,7 @@ struct PersistedVibrateFixed {
 impl Default for PersistedVibrate {
     fn default() -> Self {
         Self {
-            mode: PersistedVibrateMode::Interval,
+            mode: PersistedVibrateMode::Fixed,
             interval: PersistedVibrateInterval {
                 minimum_strength: MIN_VIBRATE_STRENGTH,
                 maximum_strength: MIN_VIBRATE_STRENGTH,
@@ -164,6 +430,9 @@ impl Default for PersistedTriggers {
     fn default() -> Self {
         let vibrate = PersistedVibrate::default();
         Self {
+            priority_order: default_priority_order(),
+            death_hold_until_respawn: true,
+            suppress_triggers_while_dead: true,
             local_player_death: PersistedTrigger {
                 enabled: true,
                 actions: PersistedActions {
@@ -190,13 +459,18 @@ impl Default for PersistedTriggers {
                 },
                 ability_filter: PersistedAbilityFilter::default(),
             },
-        }
-    }
-}
-impl Default for PersistedProviderSettings {
-    fn default() -> Self {
-        Self {
-            lovense: PersistedLovenseSetup::default(),
+            damage_taken: default_damage_taken(),
+            healing_received: default_healing_received(),
+            ally_healed: disabled_trigger(vibrate.clone()),
+            ally_shielded: disabled_trigger(vibrate.clone()),
+            damage_given: default_damage_given(),
+            soul_deny: disabled_trigger(vibrate.clone()),
+            soul_secure: disabled_trigger(vibrate.clone()),
+            parry_success: disabled_trigger(vibrate.clone()),
+            parry_fail: disabled_trigger(vibrate.clone()),
+            damage_taken_intensity: disabled_trigger(vibrate),
+            damage_taken_curve: default_intensity_curve(),
+            healing_given: None,
         }
     }
 }
@@ -208,6 +482,12 @@ impl Default for PersistedState {
             preferred_target: None,
             triggers: PersistedTriggers::default(),
             log_path: String::new(),
+            resting_strength: 0,
+            // A single unmodified "Default" profile is written in the legacy
+            // shape (empty `profiles`, top-level `triggers`) so a fresh file
+            // still loads on an older build; see `from_app`.
+            profiles: Vec::new(),
+            active_profile: 0,
         }
     }
 }
@@ -215,6 +495,40 @@ impl Default for PersistedState {
 impl PersistedState {
     pub(crate) fn from_app(app: &AppState) -> Self {
         let setup = app.effective_provider_settings();
+        // The active profile mirrors the live `triggers` / `resting_strength`
+        // (which the UI edits directly, without touching `app.profiles`); the
+        // rest are taken from the stored bundles as-is.
+        let active_triggers = PersistedTriggers::from_app(&app.triggers);
+        // A lone, unrenamed "Default" profile is fully represented by the
+        // top-level `triggers` / `resting_strength`, so `profiles` stays empty
+        // and the file reads on a build that predates profiles.
+        let is_lone_default = app.profiles.len() == 1
+            && app
+                .profiles
+                .first()
+                .is_some_and(|profile| profile.name == DEFAULT_PROFILE_NAME);
+        let profiles = if is_lone_default {
+            Vec::new()
+        } else {
+            app.profiles
+                .iter()
+                .enumerate()
+                .map(|(index, profile)| PersistedProfile {
+                    name: profile.name.clone(),
+                    triggers: if index == app.active_profile {
+                        active_triggers.clone()
+                    } else {
+                        PersistedTriggers::from_app(&profile.triggers)
+                    },
+                    resting_strength: if index == app.active_profile {
+                        app.resting_strength
+                    } else {
+                        profile.resting_strength
+                    },
+                })
+                .collect()
+        };
+        let active_profile = if is_lone_default { 0 } else { app.active_profile };
         let state = Self {
             schema_version: SCHEMA_VERSION,
             provider_settings: PersistedProviderSettings {
@@ -227,8 +541,11 @@ impl PersistedState {
                 .preferred_target
                 .as_ref()
                 .map(PersistedTarget::from_target_id),
-            triggers: PersistedTriggers::from_app(&app.triggers),
+            triggers: active_triggers,
             log_path: app.log_path.clone(),
+            resting_strength: app.resting_strength,
+            profiles,
+            active_profile,
         };
         state.normalized().unwrap_or_default()
     }
@@ -244,8 +561,34 @@ impl PersistedState {
             .preferred_target
             .as_ref()
             .and_then(|target| target.to_target_id().ok());
-        app.triggers = self.triggers.to_app();
         app.log_path = self.log_path.clone();
+
+        // A state file from before profiles existed carries no `profiles`
+        // list, so the top-level effects become its sole "Default" profile.
+        let mut profiles: Vec<EffectProfile> = if self.profiles.is_empty() {
+            vec![EffectProfile {
+                name: DEFAULT_PROFILE_NAME.to_owned(),
+                triggers: self.triggers.to_app(),
+                resting_strength: self.resting_strength.min(20),
+            }]
+        } else {
+            self.profiles
+                .iter()
+                .map(|profile| EffectProfile {
+                    name: profile.name.clone(),
+                    triggers: profile.triggers.to_app(),
+                    resting_strength: profile.resting_strength.min(20),
+                })
+                .collect()
+        };
+        if profiles.is_empty() {
+            profiles.push(EffectProfile::new(DEFAULT_PROFILE_NAME));
+        }
+        let active = self.active_profile.min(profiles.len() - 1);
+        app.triggers = profiles[active].triggers.clone();
+        app.resting_strength = profiles[active].resting_strength;
+        app.profiles = profiles;
+        app.active_profile = active;
         app
     }
     fn normalized(mut self) -> Result<Self, String> {
@@ -255,26 +598,15 @@ impl PersistedState {
                 self.schema_version
             ));
         }
-        self.triggers.local_player_death.actions.vibrate.normalize();
-        self.triggers.local_player_kill.actions.vibrate.normalize();
-        self.triggers.local_player_assist.actions.vibrate.normalize();
-        self.triggers
-            .ability_used
-            .trigger
-            .actions
-            .vibrate
-            .normalize();
-        self.triggers
-            .ability_cooldown_ready
-            .trigger
-            .actions
-            .vibrate
-            .normalize();
-        self.triggers.ability_used.ability_filter.normalize();
-        self.triggers
-            .ability_cooldown_ready
-            .ability_filter
-            .normalize();
+        self.triggers.normalize();
+        self.resting_strength = self.resting_strength.min(20);
+        for profile in &mut self.profiles {
+            profile.triggers.normalize();
+            profile.resting_strength = profile.resting_strength.min(20);
+        }
+        if !self.profiles.is_empty() {
+            self.active_profile = self.active_profile.min(self.profiles.len() - 1);
+        }
         if let Some(target) = &self.preferred_target {
             self.preferred_target = Some(PersistedTarget::from_target_id(&target.to_target_id()?));
         }
@@ -284,6 +616,13 @@ impl PersistedState {
 impl PersistedTriggers {
     fn from_app(triggers: &TriggerSettingsSet) -> Self {
         Self {
+            priority_order: triggers
+                .priority_order
+                .iter()
+                .map(|kind| PersistedTriggerKind::from(*kind))
+                .collect(),
+            death_hold_until_respawn: triggers.death_hold_until_respawn,
+            suppress_triggers_while_dead: triggers.suppress_triggers_while_dead,
             local_player_death: PersistedTrigger::from_app(&triggers.death),
             local_player_kill: PersistedTrigger::from_app(&triggers.kill),
             local_player_assist: PersistedTrigger::from_app(&triggers.assist),
@@ -291,16 +630,101 @@ impl PersistedTriggers {
             ability_cooldown_ready: PersistedAbilityTrigger::from_app(
                 &triggers.ability_cooldown_ready,
             ),
+            damage_taken: PersistedAmountTrigger::from_app(&triggers.damage_taken),
+            healing_received: PersistedAmountTrigger::from_app(&triggers.healing_received),
+            ally_healed: PersistedTrigger::from_app(&triggers.ally_healed),
+            ally_shielded: PersistedTrigger::from_app(&triggers.ally_shielded),
+            damage_given: PersistedAmountTrigger::from_app(&triggers.damage_given),
+            soul_deny: PersistedTrigger::from_app(&triggers.soul_deny),
+            soul_secure: PersistedTrigger::from_app(&triggers.soul_secure),
+            parry_success: PersistedTrigger::from_app(&triggers.parry_success),
+            parry_fail: PersistedTrigger::from_app(&triggers.parry_fail),
+            damage_taken_intensity: PersistedTrigger::from_app(&triggers.damage_taken_intensity),
+            damage_taken_curve: PersistedIntensityCurve::from_curve(
+                &triggers.damage_taken_curve,
+            ),
+            healing_given: None,
         }
     }
     fn to_app(&self) -> TriggerSettingsSet {
-        TriggerSettingsSet {
+        // A file that predates the split carries the old amount-gated
+        // `healing_given`; if it was enabled, adopt its enable state and
+        // effect for the new "healed an ally" trigger.
+        let ally_healed = match &self.healing_given {
+            Some(legacy) if legacy.trigger.enabled && !self.ally_healed.enabled => {
+                legacy.trigger.to_app()
+            }
+            _ => self.ally_healed.to_app(),
+        };
+        let mut set = TriggerSettingsSet {
             death: self.local_player_death.to_app(),
             kill: self.local_player_kill.to_app(),
             assist: self.local_player_assist.to_app(),
             ability_use: self.ability_used.to_app(),
             ability_cooldown_ready: self.ability_cooldown_ready.to_app(),
+            damage_taken: self.damage_taken.to_app(),
+            healing_received: self.healing_received.to_app(),
+            ally_healed,
+            ally_shielded: self.ally_shielded.to_app(),
+            damage_given: self.damage_given.to_app(),
+            soul_deny: self.soul_deny.to_app(),
+            soul_secure: self.soul_secure.to_app(),
+            parry_success: self.parry_success.to_app(),
+            parry_fail: self.parry_fail.to_app(),
+            damage_taken_intensity: self.damage_taken_intensity.to_app(),
+            damage_taken_curve: self.damage_taken_curve.to_curve(),
+            priority_order: self
+                .priority_order
+                .iter()
+                .map(|kind| TriggerKind::from(*kind))
+                .collect(),
+            death_hold_until_respawn: self.death_hold_until_respawn,
+            suppress_triggers_while_dead: self.suppress_triggers_while_dead,
+        };
+        set.normalize_priority_order();
+        set
+    }
+    /// Canonicalizes every trigger's action settings, ability filters and the
+    /// overlap-priority order. Applied to the top-level triggers and to each
+    /// stored profile.
+    fn normalize(&mut self) {
+        self.local_player_death.actions.vibrate.normalize();
+        self.local_player_kill.actions.vibrate.normalize();
+        self.local_player_assist.actions.vibrate.normalize();
+        self.ability_used.trigger.actions.vibrate.normalize();
+        self.ability_cooldown_ready.trigger.actions.vibrate.normalize();
+        self.ability_used.ability_filter.normalize();
+        self.ability_cooldown_ready.ability_filter.normalize();
+        self.damage_taken.normalize();
+        self.healing_received.normalize();
+        self.ally_healed.actions.vibrate.normalize();
+        self.ally_shielded.actions.vibrate.normalize();
+        self.damage_given.normalize();
+        self.soul_deny.actions.vibrate.normalize();
+        self.soul_secure.actions.vibrate.normalize();
+        self.parry_success.actions.vibrate.normalize();
+        self.parry_fail.actions.vibrate.normalize();
+        self.damage_taken_intensity.actions.vibrate.normalize();
+        self.damage_taken_curve =
+            PersistedIntensityCurve::from_curve(&self.damage_taken_curve.to_curve());
+        if let Some(legacy) = &mut self.healing_given {
+            legacy.normalize();
         }
+        self.normalize_priority_order();
+    }
+    fn normalize_priority_order(&mut self) {
+        let mut ordered = Vec::with_capacity(DEFAULT_PRIORITY_ORDER.len());
+        for kind in self.priority_order.drain(..) {
+            if !ordered.contains(&kind) {
+                ordered.push(kind);
+            }
+        }
+        for kind in DEFAULT_PRIORITY_ORDER {
+            if !ordered.contains(&kind) {
+                ordered.push(kind);
+            }
+        }
+        self.priority_order = ordered;
     }
 }
 impl PersistedTrigger {
@@ -397,44 +821,27 @@ impl PersistedVibrate {
         }
     }
     fn normalize(&mut self) {
-        self.interval.minimum_strength = normalize_value(
-            self.interval.minimum_strength,
-            MIN_VIBRATE_STRENGTH,
-            MAX_VIBRATE_STRENGTH,
-            MIN_VIBRATE_STRENGTH,
-        );
-        self.interval.maximum_strength = normalize_value(
-            self.interval.maximum_strength,
-            MIN_VIBRATE_STRENGTH,
-            MAX_VIBRATE_STRENGTH,
-            MIN_VIBRATE_STRENGTH,
-        )
-        .max(self.interval.minimum_strength);
-        self.fixed.strength = normalize_value(
-            self.fixed.strength,
-            MIN_VIBRATE_STRENGTH,
-            MAX_VIBRATE_STRENGTH,
-            MIN_VIBRATE_STRENGTH,
-        );
-        self.interval.minimum_duration_seconds = normalize_value(
-            self.interval.minimum_duration_seconds,
-            MIN_VIBRATE_DURATION,
-            MAX_VIBRATE_DURATION,
-            MIN_VIBRATE_DURATION,
-        );
-        self.interval.maximum_duration_seconds = normalize_value(
-            self.interval.maximum_duration_seconds,
-            MIN_VIBRATE_DURATION,
-            MAX_VIBRATE_DURATION,
-            MIN_VIBRATE_DURATION,
-        )
-        .max(self.interval.minimum_duration_seconds);
-        self.fixed.duration_seconds = normalize_value(
-            self.fixed.duration_seconds,
-            MIN_VIBRATE_DURATION,
-            MAX_VIBRATE_DURATION,
-            MIN_VIBRATE_DURATION,
-        );
+        let normalize_strength =
+            |value: f32| normalize_value(value, MIN_VIBRATE_STRENGTH, MAX_VIBRATE_STRENGTH, MIN_VIBRATE_STRENGTH);
+        let normalize_duration = |value: f32| {
+            nearest_duration_step(normalize_value(
+                value,
+                MIN_VIBRATE_DURATION,
+                MAX_VIBRATE_DURATION,
+                MIN_VIBRATE_DURATION,
+            ))
+        };
+
+        self.interval.minimum_strength = normalize_strength(self.interval.minimum_strength);
+        self.interval.maximum_strength =
+            normalize_strength(self.interval.maximum_strength).max(self.interval.minimum_strength);
+        self.fixed.strength = normalize_strength(self.fixed.strength);
+
+        self.interval.minimum_duration_seconds =
+            normalize_duration(self.interval.minimum_duration_seconds);
+        self.interval.maximum_duration_seconds = normalize_duration(self.interval.maximum_duration_seconds)
+            .max(self.interval.minimum_duration_seconds);
+        self.fixed.duration_seconds = normalize_duration(self.fixed.duration_seconds);
     }
 }
 impl From<VibrateMode> for PersistedVibrateMode {
@@ -1070,6 +1477,166 @@ mod tests {
     }
 
     #[test]
+    fn priority_order_round_trips_and_missing_field_falls_back_to_default() {
+        let mut original = AppState::default();
+        original.triggers.priority_order = vec![
+            TriggerKind::AbilityUse,
+            TriggerKind::Death,
+            TriggerKind::Kill,
+            TriggerKind::Assist,
+            TriggerKind::AbilityCooldownReady,
+            TriggerKind::DamageTaken,
+            TriggerKind::HealingReceived,
+            TriggerKind::AllyHealed,
+            TriggerKind::AllyShielded,
+            TriggerKind::DamageGiven,
+            TriggerKind::SoulDeny,
+            TriggerKind::ParrySuccess,
+            TriggerKind::ParryFail,
+        ];
+        let persisted = PersistedState::from_app(&original);
+        assert_eq!(
+            persisted.restore_app().triggers.priority_order,
+            original.triggers.priority_order
+        );
+
+        // A state file that still lists retired kinds loads without them.
+        let mut with_retired = serde_json::to_value(&persisted).unwrap();
+        with_retired["triggers"]["priority_order"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!("soul_secure"));
+        let cleaned = serde_json::from_value::<PersistedState>(with_retired)
+            .unwrap()
+            .restore_app();
+        assert_eq!(cleaned.triggers.priority_order, original.triggers.priority_order);
+
+        let mut value = serde_json::to_value(&persisted).unwrap();
+        value["triggers"]
+            .as_object_mut()
+            .unwrap()
+            .remove("priority_order");
+        let without_field = serde_json::from_value::<PersistedState>(value)
+            .unwrap()
+            .normalized()
+            .unwrap();
+        assert_eq!(
+            without_field.restore_app().triggers.priority_order,
+            crate::app::PRIORITY_ORDER_DEFAULT.to_vec()
+        );
+    }
+
+    #[test]
+    fn multiple_effect_profiles_round_trip_with_the_active_one() {
+        let mut original = AppState::default();
+        original.triggers.death.actions.fixed.strength = 4.0;
+        original.resting_strength = 3;
+        original.duplicate_profile(0); // a copy of Default, now active (index 1)
+        original.triggers.death.actions.fixed.strength = 17.0;
+        original.triggers.kill.enabled = true;
+        original.resting_strength = 9;
+        original.add_blank_profile(); // a fresh profile, now active (index 2)
+        original.switch_profile(1); // leave the copy active
+
+        let restored = PersistedState::from_app(&original).restore_app();
+
+        assert_eq!(restored.profiles.len(), 3);
+        assert_eq!(restored.active_profile, 1);
+        assert_eq!(restored.profiles[0].name, DEFAULT_PROFILE_NAME);
+        assert_eq!(restored.profiles[0].triggers.death.actions.fixed.strength, 4.0);
+        assert_eq!(restored.profiles[0].resting_strength, 3);
+        assert_eq!(restored.profiles[1].triggers.death.actions.fixed.strength, 17.0);
+        assert!(restored.profiles[1].triggers.kill.enabled);
+        assert_eq!(restored.profiles[1].resting_strength, 9);
+        assert!(!restored.profiles[2].triggers.kill.enabled);
+        // The active profile's effects are also live.
+        assert_eq!(restored.triggers.death.actions.fixed.strength, 17.0);
+        assert_eq!(restored.resting_strength, 9);
+    }
+
+    #[test]
+    fn a_state_file_without_a_profiles_key_loads_as_one_default_profile() {
+        let mut original = AppState::default();
+        original.triggers.kill.enabled = true;
+        original.resting_strength = 5;
+        let mut value = serde_json::to_value(PersistedState::from_app(&original)).unwrap();
+        // A lone Default profile is written in the legacy shape already, but be
+        // explicit that an older file with neither key still loads.
+        let object = value.as_object_mut().unwrap();
+        object.remove("profiles");
+        object.remove("active_profile");
+
+        let restored = serde_json::from_value::<PersistedState>(value)
+            .unwrap()
+            .normalized()
+            .unwrap()
+            .restore_app();
+
+        assert_eq!(restored.profiles.len(), 1);
+        assert_eq!(restored.profiles[0].name, DEFAULT_PROFILE_NAME);
+        assert_eq!(restored.active_profile, 0);
+        assert!(restored.triggers.kill.enabled);
+        assert_eq!(restored.resting_strength, 5);
+    }
+
+    #[test]
+    fn a_saved_active_profile_index_past_the_end_is_clamped() {
+        let mut original = AppState::default();
+        original.add_blank_profile();
+        let mut value = serde_json::to_value(PersistedState::from_app(&original)).unwrap();
+        value["active_profile"] = serde_json::json!(99);
+
+        let restored = serde_json::from_value::<PersistedState>(value)
+            .unwrap()
+            .normalized()
+            .unwrap()
+            .restore_app();
+
+        assert_eq!(restored.active_profile, restored.profiles.len() - 1);
+    }
+
+    #[test]
+    fn resting_and_death_hold_settings_round_trip_and_default_when_absent() {
+        let mut original = AppState::default();
+        original.resting_strength = 7;
+        original.triggers.death_hold_until_respawn = false;
+        original.triggers.suppress_triggers_while_dead = false;
+
+        let persisted = PersistedState::from_app(&original);
+        let restored = persisted.restore_app();
+        assert_eq!(restored.resting_strength, 7);
+        assert!(!restored.triggers.death_hold_until_respawn);
+        assert!(!restored.triggers.suppress_triggers_while_dead);
+
+        let mut value = serde_json::to_value(&persisted).unwrap();
+        value.as_object_mut().unwrap().remove("resting_strength");
+        let triggers = value["triggers"].as_object_mut().unwrap();
+        triggers.remove("death_hold_until_respawn");
+        triggers.remove("suppress_triggers_while_dead");
+        let restored = serde_json::from_value::<PersistedState>(value)
+            .unwrap()
+            .normalized()
+            .unwrap()
+            .restore_app();
+        assert_eq!(restored.resting_strength, 0);
+        assert!(restored.triggers.death_hold_until_respawn);
+        assert!(restored.triggers.suppress_triggers_while_dead);
+    }
+
+    #[test]
+    fn resting_strength_is_clamped_on_restore() {
+        let mut value =
+            serde_json::to_value(PersistedState::from_app(&AppState::default())).unwrap();
+        value["resting_strength"] = serde_json::json!(250);
+        let restored = serde_json::from_value::<PersistedState>(value)
+            .unwrap()
+            .normalized()
+            .unwrap()
+            .restore_app();
+        assert_eq!(restored.resting_strength, 20);
+    }
+
+    #[test]
     fn normalization_is_independent_for_each_action_profile() {
         let mut state = PersistedState::default();
         state
@@ -1086,7 +1653,7 @@ mod tests {
             .actions
             .vibrate
             .fixed
-            .duration_seconds = 90.0;
+            .duration_seconds = 9000.0;
         state
             .triggers
             .ability_cooldown_ready
@@ -1199,7 +1766,7 @@ mod tests {
             .actions
             .vibrate
             .fixed
-            .duration_seconds = 90.0;
+            .duration_seconds = 9000.0;
         state.triggers.ability_used.ability_filter = PersistedAbilityFilter {
             mode: PersistedAbilityFilterMode::Selected,
             slots: vec![4, 0, 2, 4, 2],

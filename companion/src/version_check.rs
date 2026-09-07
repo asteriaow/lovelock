@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::io::Read;
+use std::sync::LazyLock;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
@@ -25,18 +26,13 @@ struct LatestReleaseResponse {
     tag_name: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum VersionCheckState {
+    #[default]
     Checking,
     Current { latest: Version },
     UpdateAvailable { latest: Version },
     Unavailable { reason: String },
-}
-
-impl Default for VersionCheckState {
-    fn default() -> Self {
-        Self::Checking
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -62,8 +58,12 @@ pub enum VersionCheckError {
 impl VersionCheckError {
     fn category(&self) -> &'static str {
         match self {
-            Self::Request(error) if error.is_timeout() => "timeout",
+            // `is_connect` is checked first: on some platforms a failure to
+            // reach the host (refused / unroutable) also reports `is_timeout`
+            // when it happens during the connect phase, and "connect" is the
+            // more useful label for it than "timeout".
             Self::Request(error) if error.is_connect() => "connect",
+            Self::Request(error) if error.is_timeout() => "timeout",
             Self::Request(_) => "request",
             Self::Read(_) => "body_read",
             Self::HttpStatus(_) => "http_status",
@@ -116,8 +116,13 @@ pub fn check_latest_release_with(
     normalize_release_tag(&tag)
 }
 
-pub fn app_version() -> Version {
+/// The compiled-in package version, parsed once. `draw` reads it every frame.
+static APP_VERSION: LazyLock<Version> = LazyLock::new(|| {
     Version::parse(env!("CARGO_PKG_VERSION")).expect("Cargo package version must be valid semver")
+});
+
+pub fn app_version() -> Version {
+    APP_VERSION.clone()
 }
 
 fn precedence_cmp(left: &Version, right: &Version) -> Ordering {
@@ -142,10 +147,14 @@ pub fn select_warnings(
     mod_observation: &ModVersionObservation,
     remote: Option<&Version>,
 ) -> WarningSelection {
-    let observed = match mod_observation {
-        ModVersionObservation::Reported(version) => Version::parse(version).ok(),
+    // Parsed once: `draw` calls this every frame, and the raw string is also
+    // needed below to tell "reported but unparseable" from "not reported".
+    let reported_parse = match mod_observation {
+        ModVersionObservation::Reported(version) => Some(Version::parse(version)),
         _ => None,
     };
+    let reported_unparseable = matches!(reported_parse, Some(Err(_)));
+    let observed = reported_parse.and_then(Result::ok);
     let target = [Some(app), observed.as_ref(), remote]
         .into_iter()
         .flatten()
@@ -167,7 +176,7 @@ pub fn select_warnings(
         mod_outdated,
         mod_legacy: matches!(mod_observation, ModVersionObservation::Legacy),
         mod_invalid: matches!(mod_observation, ModVersionObservation::Invalid)
-            || matches!(mod_observation, ModVersionObservation::Reported(version) if Version::parse(version).is_err()),
+            || reported_unparseable,
     }
 }
 
@@ -446,9 +455,18 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("reserve unused port");
         let endpoint = format!("http://{}", listener.local_addr().expect("unused address"));
         drop(listener);
-        let connect =
-            check_latest_release_with(&test_client(Duration::from_millis(100)), &endpoint)
-                .expect_err("connection must fail");
+        // A short connect timeout with a generous overall deadline, so a host we
+        // cannot reach fails in the connect phase. Whether the OS answers with
+        // "refused" (fast) or drops the SYN (the connect timeout fires) is
+        // platform dependent, but both are connection failures, not request
+        // timeouts.
+        let connect_client = Client::builder()
+            .connect_timeout(Duration::from_millis(100))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("connect test client");
+        let connect = check_latest_release_with(&connect_client, &endpoint)
+            .expect_err("connection must fail");
         assert_eq!(connect.category(), "connect");
 
         let (endpoint, _) = serve_once(

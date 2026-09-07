@@ -145,7 +145,41 @@ function createHarness({
     });
     let damageImpactInstances = [];
     const damageImpactInfo = createPanel({ id: "damageImpactInfo", children: [] });
-    const hudRoot = createPanel({ id: "HudCore", children: [abilityRoot, damageImpactInfo] });
+    let eventIndicatorInstances = [];
+    const eventIndicators = createPanel({ id: "HudEventIndicatorsPanel", children: [] });
+    const healthRegenAndTotal = createPanel({ id: "HealthRegenAndTotal", children: [] });
+    const feedbackDisplay = createPanel({
+        id: "CitadelDamageFeedbackDisplay",
+        paneltype: "CitadelDamageFeedbackDisplay",
+        children: [],
+    });
+    let healthLabel = createPanel({ classes: ["currentHealthLabel"], paneltype: "Label", text: "600" });
+    const healthBandWrapper = createPanel({ classes: [], children: [healthLabel] });
+    const gunElement = createPanel({ classes: ["ability_element_gun"], children: [] });
+    let bulletShieldValue = createPanel({ classes: ["progress_bar_current"], paneltype: "Label", text: "0" });
+    let techShieldValue = createPanel({ classes: ["progress_bar_current"], paneltype: "Label", text: "0" });
+    const bulletShieldContainer = createPanel({
+        classes: ["BulletShieldNumbers"],
+        children: [bulletShieldValue],
+    });
+    const techShieldContainer = createPanel({
+        classes: ["TechShieldNumbers"],
+        children: [techShieldValue],
+    });
+    const hudRoot = createPanel({
+        id: "HudCore",
+        children: [
+            abilityRoot,
+            damageImpactInfo,
+            eventIndicators,
+            healthRegenAndTotal,
+            feedbackDisplay,
+            healthBandWrapper,
+            gunElement,
+            bulletShieldContainer,
+            techShieldContainer,
+        ],
+    });
 
     const context = createPanel();
     context.GetParent = () => rootAvailable ? hudRoot : null;
@@ -153,13 +187,25 @@ function createHarness({
         className === "LocalPlayer" && available ? [player] : [];
     context.IsValid = () => contextValid;
 
+    const createdPanels = [];
     const panorama = {
         GetContextPanel: () => context,
         Msg: (message) => messages.push(message),
         Schedule: (delay, callback) => scheduled.push({ delay, callback }),
+        CreatePanel: (paneltype, parent, id) => {
+            const created = createPanel({ id, paneltype });
+            if (parent && parent.setChildren) {
+                parent.setChildren([...parent.Children(), created]);
+            }
+            createdPanels.push(created);
+            return created;
+        },
     };
 
-    Date.now = () => now++;
+    // Advance a frame's worth of ms per read so the mod's short wall-clock
+    // timers (the parry resolve window, the damage-given flush) elapse over a
+    // realistic number of polls instead of hundreds.
+    Date.now = () => (now += 16);
     Math.random = () => 0.5;
     new Function("$", source)(panorama);
 
@@ -168,6 +214,12 @@ function createHarness({
         expect(next).toBeDefined();
         expect(next.delay).toBe(0.1);
         next.callback();
+    }
+
+    function advancePolls(count) {
+        for (let i = 0; i < count; i++) {
+            runNextPoll();
+        }
     }
 
     function events(name) {
@@ -230,6 +282,7 @@ function createHarness({
     return {
         events,
         runNextPoll,
+        advancePolls,
         settle,
         advanceDamageImpactScan,
         scheduled,
@@ -260,22 +313,63 @@ function createHarness({
         setKills: (value) => { killsLabel.setText(String(value)); },
         setAssists: (value) => { assistsLabel.setText(String(value)); },
         setKillStreak: (value) => { killStreakLabel.setText(value === null ? null : String(value)); },
-        spawnDamageImpactInstance: ({ name = "Enemy", assist = false } = {}) => {
-            const instance = createPanel({
-                id: name,
-                classes: assist
-                    ? ["team2", "damageImpactInstance", "assist", "fadeIn"]
-                    : ["team2", "damageImpactInstance", "fadeIn"],
-                children: [
-                    createPanel({
-                        id: "KillAssistContainer",
-                        children: [
-                            createPanel({ classes: ["killLabel"], paneltype: "Label", text: "KILL" }),
-                            createPanel({ classes: ["assistLabel"], paneltype: "Label", text: "KILL ASSIST" }),
-                        ],
-                    }),
-                ],
-            });
+        setHealth: (value) => { healthLabel.setText(value === null ? null : String(value)); },
+        setShield: (key, value) => {
+            const panel = key === "bulletShield" ? bulletShieldValue : techShieldValue;
+            panel.setText(String(value));
+        },
+        advanceVitalsFlush: () => {
+            // pollVitals only flushes accumulated damage/healing every
+            // VITALS_FLUSH_EVERY_POLLS polls in death_http_bridge.js.
+            for (let i = 0; i < 3; i++) {
+                runNextPoll();
+            }
+        },
+        spawnDamageImpactInstance: ({
+            name = "Enemy",
+            assist = false,
+            heal = false,
+            shield = false,
+            stunned = false,
+            killed = false,
+            barrierWidth = 40,
+            healthWidth = 40,
+        } = {}) => {
+            const classes = ["team2", "damageImpactInstance", "fadeIn"];
+            if (assist) {
+                classes.push("assist");
+            }
+            if (stunned) {
+                classes.push("Stunned", "ShowStatusEffect");
+            }
+            if (killed) {
+                classes.push("killed");
+            }
+            if (heal) {
+                // The game also stamps this ambiguous class on barrier-only
+                // instances; the mod ignores it and reads the bars instead.
+                classes.push("is_heal");
+            }
+            const children = [
+                createPanel({
+                    id: "KillAssistContainer",
+                    children: [
+                        createPanel({ classes: ["killLabel"], paneltype: "Label", text: "KILL" }),
+                        createPanel({ classes: ["assistLabel"], paneltype: "Label", text: "KILL ASSIST" }),
+                    ],
+                }),
+                // Both bars are always present in the instance; each rests at
+                // width 0 and only grows when that effect actually landed.
+                createPanel({
+                    id: "healthGained",
+                    properties: { actuallayoutwidth: heal ? healthWidth : 0 },
+                }),
+                createPanel({
+                    id: "barrierGained",
+                    properties: { actuallayoutwidth: shield ? barrierWidth : 0 },
+                }),
+            ];
+            const instance = createPanel({ id: name, classes, children });
             damageImpactInstances = [...damageImpactInstances, instance];
             damageImpactInfo.setChildren(damageImpactInstances);
             return instance;
@@ -285,6 +379,60 @@ function createHarness({
             damageImpactInstances = damageImpactInstances.filter((candidate) => candidate !== instance);
             damageImpactInfo.setChildren(damageImpactInstances);
         },
+        // A floating combat-feedback indicator: `kind` is the category class
+        // ("deny", "gold", "damage_type_gun", ...), text is the amount.
+        spawnFeedbackIndicator: ({ kind = "damage_type_gun", amount = 100 } = {}) => {
+            const label = createPanel({
+                classes: [kind, "HudIndicatorText"],
+                paneltype: "Label",
+                text: String(amount),
+            });
+            feedbackDisplay.setChildren([...feedbackDisplay.Children(), label]);
+            return label;
+        },
+        removeFeedbackIndicator: (label) => {
+            label.setValid(false);
+            feedbackDisplay.setChildren(
+                feedbackDisplay.Children().filter((candidate) => candidate !== label),
+            );
+        },
+        setFeedbackIndicatorText: (label, amount) => { label.setText(String(amount)); },
+        // A floating event indicator under #HudEventIndicatorsPanel: `kind` is
+        // the category class ("deny" for a soul denied, "gold" for a soul
+        // gained, ...).
+        spawnEventIndicator: ({ kind = "deny", name = "SoulIndicator" } = {}) => {
+            const instance = createPanel({
+                id: name,
+                classes: [kind, "WindowRoot"],
+                children: [
+                    createPanel({ classes: ["HudIndicatorContainer"], children: [
+                        createPanel({ classes: ["HudIndicatorText"], paneltype: "Label", text: "" }),
+                    ] }),
+                ],
+            });
+            eventIndicatorInstances = [...eventIndicatorInstances, instance];
+            eventIndicators.setChildren(eventIndicatorInstances);
+            return instance;
+        },
+        removeEventIndicator: (instance) => {
+            instance.setValid(false);
+            eventIndicatorInstances = eventIndicatorInstances.filter((candidate) => candidate !== instance);
+            eventIndicators.setChildren(eventIndicatorInstances);
+        },
+        advanceSoulDenyScan: () => advancePolls(3),
+        setParryCooldown: (on) => { gunElement.setClasses(on ? ["ability_element_gun", "parry_on_cooldown"] : ["ability_element_gun"]); },
+        setCrosshairStunned: (on) => {
+            const base = gunElement.BHasClass("parry_on_cooldown")
+                ? ["ability_element_gun", "parry_on_cooldown"]
+                : ["ability_element_gun"];
+            gunElement.setClasses(on ? [...base, "stunned"] : base);
+        },
+        setHealthBand: (band) => {
+            healthBandWrapper.setClasses(
+                band === 2 ? ["localPlayerLowHealth"] : band === 1 ? ["localPlayerMidHealth"] : [],
+            );
+        },
+        advanceCombatScan: () => advancePolls(3),
         invalidateContext: () => { contextValid = false; },
     };
 }
@@ -811,10 +959,470 @@ describe("death_http_bridge", () => {
         expect(harness.events("local_player_assist")).toHaveLength(2);
     });
 
+    test("emits soul_deny when a deny indicator appears", () => {
+        const harness = createHarness();
+        harness.spawnEventIndicator({ kind: "deny" });
+        harness.advanceSoulDenyScan();
+
+        expect(harness.events("soul_deny")).toEqual([
+            expect.objectContaining({ detection: "feedback_indicator_class:deny" }),
+        ]);
+    });
+
+    test("does not emit soul_deny for a gold (soul gained) indicator", () => {
+        const harness = createHarness();
+        harness.spawnEventIndicator({ kind: "gold" });
+        harness.advanceSoulDenyScan();
+
+        expect(harness.events("soul_deny")).toHaveLength(0);
+    });
+
+    test("does not double-credit the same deny indicator across scans", () => {
+        const harness = createHarness();
+        harness.spawnEventIndicator({ kind: "deny" });
+        harness.advanceSoulDenyScan();
+        harness.advanceSoulDenyScan();
+
+        expect(harness.events("soul_deny")).toHaveLength(1);
+    });
+
+    test("credits a second deny once the first indicator is torn down", () => {
+        const harness = createHarness();
+        const first = harness.spawnEventIndicator({ kind: "deny", name: "Deny1" });
+        harness.advanceSoulDenyScan();
+        harness.removeEventIndicator(first);
+        harness.spawnEventIndicator({ kind: "deny", name: "Deny2" });
+        harness.advanceSoulDenyScan();
+
+        expect(harness.events("soul_deny")).toHaveLength(2);
+    });
+
+    test("ignores a deny indicator credited on the spectated hero's HUD", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setHeroIdentity("hero_b");
+        harness.advanceSoulDenyScan();
+        harness.spawnEventIndicator({ kind: "deny" });
+        harness.advanceSoulDenyScan();
+
+        expect(harness.events("soul_deny")).toHaveLength(0);
+    });
+
+    test("emits ally_healed when an impact instance carries a heal marker", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Haze", heal: true });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("ally_healed")).toEqual([
+            expect.objectContaining({ detection: "impact_bar:healthGained" }),
+        ]);
+        expect(harness.events("ally_shielded")).toHaveLength(0);
+    });
+
+    test("a barrier-only instance is a shield, never a heal", () => {
+        const harness = createHarness();
+        // shield bar grows, health bar does not, but the .is_heal class is set.
+        harness.spawnDamageImpactInstance({ name: "Haze", heal: true, shield: true, healthWidth: 0 });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("ally_shielded")).toHaveLength(1);
+        expect(harness.events("ally_healed")).toHaveLength(0);
+    });
+
+    test("does not emit ally_healed for a plain (damage-only) impact instance", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Haze" });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("ally_healed")).toHaveLength(0);
+    });
+
+    test("does not double-credit the same ally_healed instance across scans", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Haze", heal: true });
+        harness.advanceDamageImpactScan();
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("ally_healed")).toHaveLength(1);
+    });
+
+    test("emits ally_shielded when an instance's barrier bar has grown", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Haze", shield: true });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("ally_shielded")).toEqual([
+            expect.objectContaining({ detection: "impact_bar:barrierGained" }),
+        ]);
+        expect(harness.events("ally_healed")).toHaveLength(0);
+    });
+
+    test("does not emit ally_shielded while the barrier bar is at its resting width", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Haze" }); // barrierGained width 0
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("ally_shielded")).toHaveLength(0);
+    });
+
+    test("one instance that both heals and shields fires each once", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Haze", heal: true, shield: true });
+        harness.advanceDamageImpactScan();
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("ally_healed")).toHaveLength(1);
+        expect(harness.events("ally_shielded")).toHaveLength(1);
+    });
+
+    test("ignores ally support credited on the spectated hero's HUD", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setHeroIdentity("hero_b");
+        harness.advanceDamageImpactScan();
+        harness.spawnDamageImpactInstance({ name: "Haze", heal: true, shield: true });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("ally_healed")).toHaveLength(0);
+        expect(harness.events("ally_shielded")).toHaveLength(0);
+    });
+
+    test("does not treat a heal or gold indicator as damage given", () => {
+        const harness = createHarness();
+        harness.spawnFeedbackIndicator({ kind: "heal", amount: 200 });
+        harness.spawnFeedbackIndicator({ kind: "gold", amount: 90 });
+        harness.advanceCombatScan();
+
+        expect(harness.events("damage_given")).toHaveLength(0);
+        expect(harness.events("soul_secure")).toHaveLength(0);
+    });
+
+    test("sums damage-number indicators into a damage_given amount", () => {
+        const harness = createHarness();
+        harness.spawnFeedbackIndicator({ kind: "damage_type_gun", amount: 100 });
+        harness.spawnFeedbackIndicator({ kind: "damage_type_ability", amount: 175 });
+        harness.advanceCombatScan();
+
+        const given = harness.events("damage_given");
+        expect(given).toHaveLength(1);
+        expect(given[0].amount).toBe(275);
+        expect(given[0].detection).toBe("feedback_damage_numbers");
+    });
+
+    test("only the rise of a batched damage number is added", () => {
+        const harness = createHarness();
+        const label = harness.spawnFeedbackIndicator({ kind: "damage_type_gun", amount: 50 });
+        harness.advanceCombatScan();
+        harness.setFeedbackIndicatorText(label, 130); // grew by 80
+        harness.advancePolls(20); // clear the 250ms flush gate
+        harness.advanceCombatScan();
+
+        const given = harness.events("damage_given");
+        expect(given.reduce((sum, e) => sum + e.amount, 0)).toBe(130);
+    });
+
+    test("a parry that hits nothing emits neither parry_success nor parry_fail", () => {
+        const harness = createHarness();
+        harness.setParryCooldown(true);
+        harness.runNextPoll();
+        harness.advancePolls(70); // > PARRY_RESOLVE_MS at 16ms/poll
+
+        expect(harness.events("parry_success")).toHaveLength(0);
+        expect(harness.events("parry_fail")).toHaveLength(0);
+    });
+
+    test("an enemy stunned within the parry window resolves as parry_success", () => {
+        const harness = createHarness();
+        harness.setParryCooldown(true);
+        harness.runNextPoll();
+        harness.spawnDamageImpactInstance({ name: "Abrams", stunned: true });
+        harness.advancePolls(70);
+
+        expect(harness.events("parry_success")).toEqual([
+            expect.objectContaining({ detection: "enemy_stunned_after_parry" }),
+        ]);
+        expect(harness.events("parry_fail")).toHaveLength(0);
+    });
+
+    test("a killed enemy's stun class does not count as a parry connect", () => {
+        const harness = createHarness();
+        harness.setParryCooldown(true);
+        harness.runNextPoll();
+        harness.spawnDamageImpactInstance({ name: "Abrams", stunned: true, killed: true });
+        harness.advancePolls(70);
+
+        expect(harness.events("parry_success")).toHaveLength(0);
+        expect(harness.events("parry_fail")).toHaveLength(0);
+    });
+
+    test("your own stun during the parry window resolves as parry_fail, outranking an enemy stun", () => {
+        const harness = createHarness();
+        harness.setParryCooldown(true);
+        harness.runNextPoll();
+        harness.spawnDamageImpactInstance({ name: "Abrams", stunned: true });
+        harness.setCrosshairStunned(true);
+        harness.advancePolls(70);
+
+        expect(harness.events("parry_fail")).toEqual([
+            expect.objectContaining({ detection: "stunned_after_parry" }),
+        ]);
+        expect(harness.events("parry_success")).toHaveLength(0);
+    });
+
+    test("a stun that lands after the parry cooldown clears still resolves as parry_fail", () => {
+        const harness = createHarness();
+        harness.setParryCooldown(true);
+        harness.runNextPoll();
+        // Cooldown indicator drops, then the stun state shows a poll later.
+        harness.setParryCooldown(false);
+        harness.runNextPoll();
+        harness.setCrosshairStunned(true);
+        harness.advancePolls(70);
+
+        expect(harness.events("parry_fail")).toHaveLength(1);
+        expect(harness.events("parry_success")).toHaveLength(0);
+    });
+
+    test("an enemy already stunned outside any parry window is not a parry_success", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Abrams", stunned: true });
+        harness.advancePolls(20);
+
+        expect(harness.events("parry_success")).toHaveLength(0);
+    });
+
+    test("an enemy stunned before the parry starts (still fading) is not a parry connect", () => {
+        const harness = createHarness();
+        // An ability stun landed a moment before the parry; its damage-impact
+        // instance is still on screen when the parry is thrown.
+        harness.spawnDamageImpactInstance({ name: "Abrams", stunned: true });
+        harness.advancePolls(2);
+        harness.setParryCooldown(true);
+        harness.runNextPoll(); // window opens with that instance already stunned
+        harness.advancePolls(70);
+
+        expect(harness.events("parry_success")).toHaveLength(0);
+        expect(harness.events("parry_fail")).toHaveLength(0);
+    });
+
+    test("a fresh stun on a new instance during the window still resolves as parry_success", () => {
+        const harness = createHarness();
+        harness.spawnDamageImpactInstance({ name: "Abrams", stunned: true });
+        harness.advancePolls(2);
+        harness.setParryCooldown(true);
+        harness.runNextPoll();
+        // A second enemy is stunned by the parry after the window opens.
+        harness.spawnDamageImpactInstance({ name: "Lash", stunned: true });
+        harness.advancePolls(70);
+
+        expect(harness.events("parry_success")).toEqual([
+            expect.objectContaining({ detection: "enemy_stunned_after_parry" }),
+        ]);
+    });
+
+    test("damage_taken_intensity fires when the health band worsens, not when it recovers", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setHealthBand(1); // mid
+        harness.advanceCombatScan();
+        expect(harness.events("damage_taken_intensity")).toEqual([
+            expect.objectContaining({ detection: "health_band:1" }),
+        ]);
+
+        harness.setHealthBand(2); // low
+        harness.advanceCombatScan();
+        expect(harness.events("damage_taken_intensity")).toHaveLength(2);
+
+        harness.setHealthBand(0); // recovered
+        harness.advanceCombatScan();
+        expect(harness.events("damage_taken_intensity")).toHaveLength(2);
+    });
+
+    test("emits local_player_respawn without a sequence when the dead class clears", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setDead(true);
+        harness.runNextPoll();
+        harness.setDead(false);
+        harness.runNextPoll();
+
+        expect(harness.events("local_player_respawn")).toEqual([
+            expect.objectContaining({
+                event: "local_player_respawn",
+                mod_version: "0.1.0",
+                session_id: expect.any(String),
+            }),
+        ]);
+        expect(harness.events("local_player_respawn")[0]).not.toHaveProperty("sequence");
+    });
+
+    test("does not emit respawn while the baseline is still settling", () => {
+        const harness = createHarness({ initiallyDead: true });
+        harness.runNextPoll();
+        harness.setDead(false);
+        harness.runNextPoll();
+
+        expect(harness.events("local_player_respawn")).toHaveLength(0);
+    });
+
+    test("ignores spectated-hero ability signals while the hero identity holds steady", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setHeroIdentity("hero_b");
+        harness.runNextPoll();
+        harness.runNextPoll();
+        harness.setAbilityState({ classes: ["trained", "Tier0", "cooling_down"] });
+        harness.runNextPoll();
+        harness.setAbilityState({ classes: ["trained", "Tier0"] });
+        harness.runNextPoll();
+
+        expect(harness.events("ability_used")).toHaveLength(0);
+        expect(harness.events("ability_cooldown_ready")).toHaveLength(0);
+    });
+
+    test("ignores assists credited on the spectated hero's HUD", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setHeroIdentity("hero_b");
+        harness.advanceDamageImpactScan();
+        harness.spawnDamageImpactInstance({ name: "Abrams", assist: true });
+        harness.advanceDamageImpactScan();
+
+        expect(harness.events("local_player_assist")).toHaveLength(0);
+    });
+
+    test("resumes ability triggers once back on the local player's hero", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.setHeroIdentity("hero_b");
+        harness.runNextPoll();
+        harness.runNextPoll();
+        harness.setHeroIdentity("hero_a");
+        harness.runNextPoll();
+        harness.runNextPoll();
+        harness.setAbilityState({ classes: ["trained", "Tier0", "cooling_down"] });
+        harness.runNextPoll();
+
+        expect(harness.events("ability_used")).toEqual([
+            expect.objectContaining({ detection: "cooldown_started" }),
+        ]);
+    });
+
+    test("re-learns the local hero after a between-matches panel swap", () => {
+        const harness = createHarness();
+        harness.settle();
+        // Spectating a teammate in match one: their signals are ignored.
+        harness.setHeroIdentity("hero_b");
+        harness.runNextPoll();
+        harness.runNextPoll();
+        harness.setAbilityState({ classes: ["trained", "Tier0", "cooling_down"] });
+        harness.runNextPoll();
+        expect(harness.events("ability_used")).toHaveLength(0);
+
+        // Match two: fresh player panel, a different hero now under our control.
+        harness.replacePlayer();
+        harness.setHeroIdentity("hero_c");
+        harness.settle();
+        harness.setAbilityState({ classes: ["trained", "Tier0"] });
+        harness.runNextPoll();
+        harness.setAbilityState({ classes: ["trained", "Tier0", "cooling_down"] });
+        harness.runNextPoll();
+
+        expect(harness.events("ability_used")).toEqual([
+            expect.objectContaining({ detection: "cooldown_started" }),
+        ]);
+    });
+
     test("stops scheduling after its Panorama context is destroyed", () => {
         const harness = createHarness();
         harness.invalidateContext();
         harness.runNextPoll();
         expect(harness.scheduled).toHaveLength(0);
+    });
+
+    test("a health drop is flushed as damage_taken once the vitals baseline settles", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.runNextPoll(); // establish the vitals baseline at 600
+        harness.setHealth(450);
+        harness.advanceVitalsFlush();
+
+        expect(harness.events("damage_taken")).toEqual([
+            expect.objectContaining({ amount: 150, health: 450 }),
+        ]);
+    });
+
+    test("a health rise is flushed as healing_received", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.runNextPoll();
+        harness.setHealth(600);
+        harness.setHealth(720);
+        harness.advanceVitalsFlush();
+
+        expect(harness.events("healing_received")).toEqual([
+            expect.objectContaining({ amount: 120, health: 720 }),
+        ]);
+        expect(harness.events("damage_taken")).toHaveLength(0);
+    });
+
+    test("shield loss counts toward damage taken even when health itself is unchanged", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.runNextPoll();
+        harness.setShield("bulletShield", 100);
+        harness.runNextPoll();
+        harness.setShield("bulletShield", 40);
+        harness.advanceVitalsFlush();
+
+        expect(harness.events("damage_taken")).toEqual([
+            expect.objectContaining({ amount: 60 }),
+        ]);
+    });
+
+    test("damage and healing within the same flush window are reported separately", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.runNextPoll();
+        harness.setHealth(500);
+        harness.runNextPoll();
+        harness.setHealth(560);
+        harness.advanceVitalsFlush();
+
+        const damage = harness.events("damage_taken");
+        const healing = harness.events("healing_received");
+        expect(damage).toEqual([expect.objectContaining({ amount: 100 })]);
+        expect(healing).toEqual([expect.objectContaining({ amount: 60 })]);
+    });
+
+    test("a respawn's full-health restore does not report as healing", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.runNextPoll();
+        harness.setHealth(50);
+        harness.setDead(true);
+        harness.runNextPoll();
+        // Respawning snaps health back to full; that is a rebaseline, not
+        // healing the player earned.
+        harness.setHealth(600);
+        harness.setDead(false);
+        harness.runNextPoll();
+        harness.advanceVitalsFlush();
+
+        expect(harness.events("healing_received")).toHaveLength(0);
+        expect(harness.events("damage_taken")).toHaveLength(0);
+    });
+
+    test("does not flush a zero-amount direction alongside a real one", () => {
+        const harness = createHarness();
+        harness.settle();
+        harness.runNextPoll();
+        harness.setHealth(450);
+        harness.advanceVitalsFlush();
+
+        const events = harness.events().filter(
+            (event) => event.event === "damage_taken" || event.event === "healing_received",
+        );
+        expect(events).toHaveLength(1);
     });
 });

@@ -159,7 +159,14 @@ impl LovenseClient {
         Ok(decoded)
     }
 
-    /// Vibrates `toy`, or every connected toy when `toy` is `None`.
+    /// Drives every function of `toy` (or of every connected toy when `toy` is
+    /// `None`) at `strength` for `duration_secs`.
+    ///
+    /// The action is `All:<strength>`, not `Vibrate:<strength>`: the Standard
+    /// API rejects `Vibrate` on toys that expose no vibration function (a
+    /// suction-only or rotation-only toy, say), whereas `All` maps the level
+    /// onto whatever functions the toy actually has. The method name stays
+    /// `vibrate` because that is how every caller thinks of it.
     pub fn vibrate(
         &self,
         toy: Option<&Toy>,
@@ -168,27 +175,29 @@ impl LovenseClient {
     ) -> Result<(), Error> {
         validate_strength(strength)?;
         validate_duration(duration_secs)?;
-        let mut command = json!({
-            "command": "Function",
-            "action": format!("Vibrate:{strength}"),
-            "timeSec": duration_secs,
-            "apiVer": 1,
-        });
-        set_toy(&mut command, toy);
-        self.send(&command)?;
+        self.send(&function_command(
+            &format!("All:{strength}"),
+            Some(duration_secs),
+            toy,
+        ))?;
+        Ok(())
+    }
+
+    /// Drives every function of `toy` (or of every connected toy when `toy` is
+    /// `None`) at a fixed `strength` with no time limit, so the toy holds that
+    /// level until the next command or a [`stop`](Self::stop). Used to keep a
+    /// resting baseline between timed trigger effects; the Lovense app treats
+    /// an omitted `timeSec` as "run until told otherwise". Sends `All`, for
+    /// the reason described on [`vibrate`](Self::vibrate).
+    pub fn vibrate_steady(&self, toy: Option<&Toy>, strength: u8) -> Result<(), Error> {
+        validate_strength(strength)?;
+        self.send(&function_command(&format!("All:{strength}"), None, toy))?;
         Ok(())
     }
 
     /// Stops all running functions on `toy`, or every connected toy when `toy` is `None`.
     pub fn stop(&self, toy: Option<&Toy>) -> Result<(), Error> {
-        let mut command = json!({
-            "command": "Function",
-            "action": "Stop",
-            "timeSec": 0,
-            "apiVer": 1,
-        });
-        set_toy(&mut command, toy);
-        self.send(&command)?;
+        self.send(&function_command("Stop", Some(0), toy))?;
         Ok(())
     }
 
@@ -208,16 +217,32 @@ impl LovenseClient {
         })?;
         let code = value.get("code").and_then(Value::as_i64);
         if code.is_some_and(|code| code != 200) {
-            let message = value
+            let detail = value
                 .get("message")
                 .or_else(|| value.get("type"))
                 .and_then(Value::as_str)
-                .unwrap_or("unknown error")
-                .to_owned();
+                .unwrap_or("unknown error");
+            let message = match code {
+                Some(code) => format!("{detail} (code {code})"),
+                None => detail.to_owned(),
+            };
             return Err(Error::CommandRejected { message });
         }
         Ok(value)
     }
+}
+
+fn function_command(action: &str, time_sec: Option<u32>, toy: Option<&Toy>) -> Value {
+    let mut command = json!({
+        "command": "Function",
+        "action": action,
+        "apiVer": 1,
+    });
+    if let (Some(time_sec), Some(object)) = (time_sec, command.as_object_mut()) {
+        object.insert("timeSec".to_owned(), Value::from(time_sec));
+    }
+    set_toy(&mut command, toy);
+    command
 }
 
 fn set_toy(command: &mut Value, toy: Option<&Toy>) {
@@ -303,6 +328,26 @@ mod tests {
             LovenseClient::connect(Connection::new("  ", 20010)).unwrap_err(),
             Error::EmptyDomain
         );
+    }
+
+    #[test]
+    fn steady_vibrate_command_omits_time_limit() {
+        let command = function_command("Vibrate:12", None, None);
+        assert_eq!(command["action"], "Vibrate:12");
+        assert!(command.get("timeSec").is_none());
+    }
+
+    #[test]
+    fn timed_vibrate_command_carries_time_limit() {
+        let command = function_command("Vibrate:5", Some(8), None);
+        assert_eq!(command["timeSec"], 8);
+    }
+
+    #[test]
+    fn stop_command_is_a_zero_length_function() {
+        let command = function_command("Stop", Some(0), None);
+        assert_eq!(command["action"], "Stop");
+        assert_eq!(command["timeSec"], 0);
     }
 
     #[test]
