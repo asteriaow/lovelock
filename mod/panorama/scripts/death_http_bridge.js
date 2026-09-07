@@ -1147,6 +1147,35 @@
     var OBJECTIVE_GUARDIAN_SUFFIXES = ["Tier1_1", "Tier1_2", "Tier1_3", "Tier1_4"];
     var OBJECTIVE_WALKER_SUFFIXES = ["Tier2_1", "Tier2_2", "Tier2_3", "Tier2_4"];
     var OBJECTIVE_HEALTH_CLASS = "objective_health";
+    // hud_data_feed.vcss: #ObjectivesFeed is the on-screen kill feed for
+    // structures/bosses. Unlike the centre-screen objective_health bar it does
+    // not depend on standing near the objective, so it is a second, position-
+    // independent source for Base Guardian / Shrine kills (the two the bar
+    // catches only when you are there). See pollObjectiveFeed.
+    var OBJECTIVE_FEED_ID = "ObjectivesFeed";
+    // The feed row and the bar's `is_dead` for the same structure land within
+    // a second or two of each other, so an emit of a given objective event
+    // from either surface suppresses the same event name from the other for
+    // this long. Kept short so two structures of the same kind falling in
+    // quick succession are not both swallowed.
+    var OBJECTIVE_DEDUP_MS = 2500;
+    // citadel_hud_data_feed_boss_killed.vcss carries no structure-type class,
+    // so a row is typed from an explicit class if one is ever present, then
+    // the victim image src, then the victim label text. These are the class
+    // names the objective_health bar uses, checked first in case a future
+    // build puts them on the feed row too.
+    var OBJECTIVE_FEED_TYPE_CLASSES = [
+        ["is_barracks_boss", "base_guardian"],
+        ["is_shield_generator", "shrine"],
+        ["is_tier2", "walker"],
+        ["is_tier1", "guardian"]
+    ];
+    var OBJECTIVE_FEED_EVENT = {
+        base_guardian: "objective_base_guardian",
+        shrine: "objective_shrine",
+        walker: "objective_walker",
+        guardian: "objective_guardian"
+    };
 
     var objectivePollCounter = 0;
     var objectiveAliveState = {};   // full id -> last-seen `.Alive` boolean
@@ -1155,6 +1184,8 @@
     var objHealthType = null;       // type the boss bar is currently showing
     var objHealthDeadEmitted = false;
     var objHealthWeakenedEmitted = false;
+    var creditedObjectiveFeedPanels = []; // feed rows already handled (rows fade + tear down)
+    var recentObjectiveEmits = {};        // objective event name -> last emit Date.now()
 
     function resetObjectiveState() {
         objectivePollCounter = 0;
@@ -1164,6 +1195,21 @@
         objHealthType = null;
         objHealthDeadEmitted = false;
         objHealthWeakenedEmitted = false;
+        creditedObjectiveFeedPanels = [];
+        recentObjectiveEmits = {};
+    }
+
+    // Emit an objective action unless the other objective surface already
+    // emitted the same event within OBJECTIVE_DEDUP_MS. Records the time on
+    // every successful emit so the next call from either surface sees it.
+    function emitObjectiveDeduped(eventName, fields) {
+        var now = Date.now();
+        if (now - (recentObjectiveEmits[eventName] || 0) < OBJECTIVE_DEDUP_MS) {
+            return false;
+        }
+        recentObjectiveEmits[eventName] = now;
+        emitAction(eventName, fields);
+        return true;
     }
 
     function panelHasAnyClass(panel, classNames) {
@@ -1237,15 +1283,167 @@
         if (!objHealthDeadEmitted && panelHasClass(w, "is_dead")) {
             if (type === "base_guardian") {
                 objHealthDeadEmitted = true;
-                emitAction("objective_base_guardian", {
+                emitObjectiveDeduped("objective_base_guardian", {
                     detection: "objective_health:is_barracks_boss+is_dead"
                 });
             } else if (type === "shrine") {
                 objHealthDeadEmitted = true;
-                emitAction("objective_shrine", {
+                emitObjectiveDeduped("objective_shrine", {
                     detection: "objective_health:is_shield_generator+is_dead"
                 });
             }
+        }
+    }
+
+    // The direct children of #ObjectivesFeed that are boss/structure kill rows
+    // (citadel_hud_data_feed_boss_killed -> paneltype "HudBossKilled", with a
+    // .killerContainer and a .victimContainer). #ObjectivesFeed can also hold
+    // plain team-message rows, which have neither and are skipped.
+    function objectiveFeedRows(feed) {
+        var rows = [];
+        var children = panelChildren(feed);
+        for (var i = 0; i < children.length; i++) {
+            var row = children[i];
+            if (!isValidPanel(row)) {
+                continue;
+            }
+            if (panelProperty(row, "paneltype") === "HudBossKilled"
+                || (findChildrenWithClass(row, "killerContainer").length > 0
+                    && findChildrenWithClass(row, "victimContainer").length > 0)) {
+                rows.push(row);
+            }
+        }
+        return rows;
+    }
+
+    function rowHasClassDeep(row, className) {
+        return panelHasClass(row, className)
+            || findChildrenWithClass(row, className).length > 0;
+    }
+
+    // "friend" when the row credits the local player's team with the kill (so
+    // an enemy structure fell), "enemy" when the enemy cleared one of ours, or
+    // null when it cannot be told -- in which case the caller skips the row
+    // rather than guess. `friendlyTeam` is "1"/"2"/null from the objectives
+    // map; the .killerFriend/.killerEnemy classes are preferred when present.
+    function objectiveFeedKillerSide(row, friendlyTeam) {
+        if (rowHasClassDeep(row, "killerFriend")) { return "friend"; }
+        if (rowHasClassDeep(row, "killerEnemy")) { return "enemy"; }
+        if (friendlyTeam !== null) {
+            var enemyTeam = friendlyTeam === "1" ? "2" : "1";
+            if (rowHasClassDeep(row, "killerTeam" + friendlyTeam)) { return "friend"; }
+            if (rowHasClassDeep(row, "killerTeam" + enemyTeam)) { return "enemy"; }
+        }
+        return null;
+    }
+
+    function objectiveRowImageHint(row) {
+        var images = findChildrenWithClass(row, "entityImage");
+        for (var i = 0; i < images.length; i++) {
+            var src = panelProperty(images[i], "src")
+                || panelAttribute(images[i], "src")
+                || panelProperty(images[i], "image");
+            if (typeof src === "string" && src !== "") {
+                return src.toLowerCase();
+            }
+        }
+        return "";
+    }
+
+    function objectiveRowTextHint(row) {
+        var text = "";
+        var labels = findChildrenWithClass(row, "personaName");
+        if (labels.length === 0) {
+            labels = findChildrenWithClass(row, "victimInfo");
+        }
+        for (var i = 0; i < labels.length; i++) {
+            var value = panelProperty(labels[i], "text");
+            if (typeof value === "string") {
+                text += " " + value;
+            }
+        }
+        return text.toLowerCase();
+    }
+
+    // "base_guardian" | "shrine" | "walker" | "guardian" | null. Explicit type
+    // class first (future-proof), then the victim image src, then the victim
+    // label text. "base guardian" is matched before the bare "guardian" so it
+    // is not misfiled.
+    function classifyObjectiveFeedRow(row) {
+        for (var i = 0; i < OBJECTIVE_FEED_TYPE_CLASSES.length; i++) {
+            if (rowHasClassDeep(row, OBJECTIVE_FEED_TYPE_CLASSES[i][0])) {
+                return OBJECTIVE_FEED_TYPE_CLASSES[i][1];
+            }
+        }
+        var hint = objectiveRowImageHint(row) + " " + objectiveRowTextHint(row);
+        if (hint.indexOf("barrack") !== -1
+            || hint.indexOf("base guardian") !== -1
+            || hint.indexOf("base_guardian") !== -1) {
+            return "base_guardian";
+        }
+        if (hint.indexOf("shield_gen") !== -1 || hint.indexOf("shield gen") !== -1
+            || hint.indexOf("shrine") !== -1 || hint.indexOf("generator") !== -1) {
+            return "shrine";
+        }
+        if (hint.indexOf("walker") !== -1 || hint.indexOf("tier2") !== -1
+            || hint.indexOf("tier_2") !== -1) {
+            return "walker";
+        }
+        if (hint.indexOf("guardian") !== -1 || hint.indexOf("tier1") !== -1
+            || hint.indexOf("tier_1") !== -1) {
+            return "guardian";
+        }
+        return null;
+    }
+
+    // Position-independent Base Guardian / Shrine detection off #ObjectivesFeed.
+    // Guardians and Walkers are left to the objectives-map diff, which already
+    // sees them cleanly and map-wide; the feed only fills the bar's blind spot.
+    function pollObjectiveFeed(root, friendlyTeam) {
+        var feed = findCachedChildById(root, OBJECTIVE_FEED_ID);
+        if (!isValidPanel(feed)) {
+            return;
+        }
+        creditedObjectiveFeedPanels = prunedValidPanels(creditedObjectiveFeedPanels);
+
+        var rows = objectiveFeedRows(feed);
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            if (creditedObjectiveFeedPanels.indexOf(row) !== -1) {
+                continue;
+            }
+            creditedObjectiveFeedPanels.push(row);
+
+            // A row seen before the objectives map has baselined is almost
+            // certainly a stale one from before the mod (re)loaded.
+            if (!objectivesBaselined) {
+                continue;
+            }
+            if (rowHasClassDeep(row, "midBoss")) {
+                continue; // the mid boss is not one of the objective triggers
+            }
+            if (objectiveFeedKillerSide(row, friendlyTeam) !== "friend") {
+                continue; // only your team clearing an enemy structure counts
+            }
+
+            var kind = classifyObjectiveFeedRow(row);
+            if (kind === null) {
+                // Best-effort: a boss row we could not type. A non-trigger
+                // diagnostic (no sequence) so the raw hints reach console.log
+                // for tuning the matchers above.
+                emit("objective_feed_unclassified", {
+                    detection: "objectives_feed:boss_killed",
+                    image_hint: objectiveRowImageHint(row),
+                    text_hint: objectiveRowTextHint(row).replace(/^\s+/, "")
+                });
+                continue;
+            }
+            if (kind !== "base_guardian" && kind !== "shrine") {
+                continue; // guardian/walker already covered by the map diff
+            }
+            emitObjectiveDeduped(OBJECTIVE_FEED_EVENT[kind], {
+                detection: "objectives_feed:boss_killed"
+            });
         }
     }
 
@@ -1288,10 +1486,12 @@
             pollObjectiveHealth(root);
 
             var objMap = findCachedChildById(root, OBJECTIVE_MAP_ID);
+            var enemy = isValidPanel(objMap) ? objectiveEnemyTeam(objMap) : null;
+            pollObjectiveFeed(root, enemy === null ? null : (enemy === "1" ? "2" : "1"));
+
             if (!isValidPanel(objMap)) {
                 return;
             }
-            var enemy = objectiveEnemyTeam(objMap);
             if (enemy === null) {
                 return; // can't attribute yet; don't baseline a half-built map
             }

@@ -169,6 +169,8 @@ function createHarness({
     let objectiveMapChildren = [];
     const objectivesMap = createPanel({ id: "ObjectivesMap", classes: [], children: [] });
     const objectiveHealth = createPanel({ classes: ["objective_health"], children: [] });
+    let objectiveFeedRowPanels = [];
+    const objectivesFeed = createPanel({ id: "ObjectivesFeed", classes: [], children: [] });
     const matchEnd = createPanel({ paneltype: "CitadelHudMatchEnd", classes: [], children: [] });
     const hudRoot = createPanel({
         id: "HudCore",
@@ -184,6 +186,7 @@ function createHarness({
             techShieldContainer,
             objectivesMap,
             objectiveHealth,
+            objectivesFeed,
             matchEnd,
         ],
     });
@@ -483,6 +486,44 @@ function createHarness({
             if (weakened) classes.push("is_weakened");
             if (friend) classes.push("friend");
             objectiveHealth.setClasses(classes);
+        },
+        addBossKilledFeedRow: ({
+            killer = "friend",
+            midBoss = false,
+            typeClass = null,
+            victimImage = null,
+            victimText = null,
+        } = {}) => {
+            const killerContainer = createPanel({
+                classes: killer === "friend" ? ["killerContainer", "killerFriend"]
+                    : killer === "enemy" ? ["killerContainer", "killerEnemy"]
+                    : killer === "team1" ? ["killerContainer", "killerTeam1"]
+                    : killer === "team2" ? ["killerContainer", "killerTeam2"]
+                    : ["killerContainer"],
+            });
+            const victimKids = [];
+            if (victimImage !== null) {
+                victimKids.push(createPanel({ classes: ["entityImage"], properties: { src: victimImage } }));
+            }
+            if (victimText !== null) {
+                victimKids.push(createPanel({ classes: ["personaName"], paneltype: "Label", text: victimText }));
+            }
+            if (typeClass) {
+                victimKids.push(createPanel({ classes: [typeClass] }));
+            }
+            const victimContainer = createPanel({ classes: ["victimContainer"], children: victimKids });
+            const row = createPanel({
+                paneltype: "HudBossKilled",
+                classes: midBoss ? ["midBoss"] : [],
+                children: [killerContainer, victimContainer],
+            });
+            objectiveFeedRowPanels = [...objectiveFeedRowPanels, row];
+            objectivesFeed.setChildren(objectiveFeedRowPanels);
+            return row;
+        },
+        clearObjectiveFeed: () => {
+            objectiveFeedRowPanels = [];
+            objectivesFeed.setChildren([]);
         },
         setMatchEnd: ({ shown = false, localTeam = null, victoryTeam = null, abandoned = false } = {}) => {
             const classes = [];
@@ -1393,6 +1434,92 @@ describe("death_http_bridge", () => {
         harness.advanceObjectiveScan();
 
         expect(harness.events("objective_patron_weakened")).toHaveLength(1);
+    });
+
+    test("emits objective_base_guardian from a friendly-credited boss-killed feed row", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.advanceObjectiveScan(); // baseline
+        harness.addBossKilledFeedRow({ killer: "friend", victimText: "Base Guardian" });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_base_guardian")).toEqual([
+            expect.objectContaining({ detection: "objectives_feed:boss_killed" }),
+        ]);
+    });
+
+    test("classifies a shrine feed row from the victim image when it has no text", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.advanceObjectiveScan();
+        harness.addBossKilledFeedRow({
+            killer: "team1", // friendly side derived from the objectives map
+            victimImage: "s2r://panorama/images/hud/shield_generator_psd.vtex",
+        });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_shrine")).toHaveLength(1);
+    });
+
+    test("the feed ignores the mid boss and enemy-credited structure kills", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.advanceObjectiveScan();
+        harness.addBossKilledFeedRow({ killer: "friend", midBoss: true, victimText: "Base Guardian" });
+        harness.addBossKilledFeedRow({ killer: "enemy", victimText: "Base Guardian" });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_base_guardian")).toHaveLength(0);
+    });
+
+    test("the feed does not double-fire an objective the centre bar already reported", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.advanceObjectiveScan();
+        harness.setObjectiveHealth({ type: "shrine" });
+        harness.advanceObjectiveScan();
+        harness.setObjectiveHealth({ type: "shrine", dead: true });
+        harness.advanceObjectiveScan(); // centre bar emits objective_shrine
+        harness.addBossKilledFeedRow({ killer: "friend", victimText: "Shrine" });
+        harness.advanceObjectiveScan(); // feed would emit, but it is within the dedup window
+
+        expect(harness.events("objective_shrine")).toHaveLength(1);
+    });
+
+    test("guardian and walker feed rows are left to the objectives-map diff", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.advanceObjectiveScan();
+        harness.addBossKilledFeedRow({ killer: "friend", victimText: "Walker" });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_walker")).toHaveLength(0);
+        expect(harness.events("objective_guardian")).toHaveLength(0);
+    });
+
+    test("an untypeable boss-killed row emits only a sequence-less diagnostic", () => {
+        const harness = createHarness();
+        harness.setObjectiveEnemyTeam(2);
+        harness.advanceObjectiveScan();
+        harness.addBossKilledFeedRow({ killer: "friend", victimText: "mystery structure" });
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_base_guardian")).toHaveLength(0);
+        expect(harness.events("objective_shrine")).toHaveLength(0);
+        const diagnostics = harness.events("objective_feed_unclassified");
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0].text_hint).toBe("mystery structure");
+        expect(diagnostics[0]).not.toHaveProperty("sequence");
+    });
+
+    test("does not credit a feed row that was already on screen at baseline", () => {
+        const harness = createHarness();
+        harness.addBossKilledFeedRow({ killer: "friend", victimText: "Base Guardian" });
+        harness.setObjectiveEnemyTeam(2);
+        harness.advanceObjectiveScan(); // first baseline pass sees the row, does not credit it
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_base_guardian")).toHaveLength(0);
     });
 
     test("damage_taken_intensity fires when the health band worsens, not when it recovers", () => {

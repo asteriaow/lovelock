@@ -6,6 +6,13 @@ pub const MIN_VIBRATE_STRENGTH: f32 = 0.0;
 pub const MAX_VIBRATE_STRENGTH: f32 = 20.0;
 pub const MIN_VIBRATE_DURATION: f32 = 0.25;
 pub const MAX_VIBRATE_DURATION: f32 = 60.0;
+/// What a fresh profile's vibration settings start at: a light 1-strength
+/// buzz for a whole second. A whole second keeps the effect on the Standard
+/// API's timed path (sub-second durations fall back to a hold/stop that some
+/// toys reject), and a non-zero strength means an enabled trigger is felt
+/// rather than silently doing nothing.
+pub const DEFAULT_VIBRATE_STRENGTH: f32 = 1.0;
+pub const DEFAULT_VIBRATE_DURATION: f32 = 1.0;
 /// The sub-second portion of the duration grid: quarter-second steps below a
 /// full second, where a whole-second count stops being meaningful. From 1
 /// second up, [`duration_steps`] continues in whole seconds instead.
@@ -77,22 +84,22 @@ impl Default for VibrateActionSettings {
         Self {
             mode: VibrateMode::default(),
             interval: VibrateIntervalSettings {
-                minimum_strength: MIN_VIBRATE_STRENGTH,
-                maximum_strength: MIN_VIBRATE_STRENGTH,
-                minimum_duration_seconds: MIN_VIBRATE_DURATION,
-                maximum_duration_seconds: MIN_VIBRATE_DURATION,
+                minimum_strength: DEFAULT_VIBRATE_STRENGTH,
+                maximum_strength: DEFAULT_VIBRATE_STRENGTH,
+                minimum_duration_seconds: DEFAULT_VIBRATE_DURATION,
+                maximum_duration_seconds: DEFAULT_VIBRATE_DURATION,
             },
             fixed: VibrateFixedSettings {
-                strength: MIN_VIBRATE_STRENGTH,
-                duration_seconds: MIN_VIBRATE_DURATION,
+                strength: DEFAULT_VIBRATE_STRENGTH,
+                duration_seconds: DEFAULT_VIBRATE_DURATION,
             },
         }
     }
 }
 impl VibrateActionSettings {
     /// A ready-to-feel starting point for a fresh profile's death effect: a
-    /// fixed mid-strength buzz for a second, rather than the all-zero
-    /// [`Default`] that stays silent until the user sets a strength.
+    /// fixed mid-strength buzz for a second, stronger than the light
+    /// 1-strength [`Default`].
     pub fn starter_death() -> Self {
         Self {
             mode: VibrateMode::Fixed,
