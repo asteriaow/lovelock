@@ -1387,8 +1387,7 @@ fn log_rejected_bridge_record(line: &str) {
     // payload at INFO instead of the terse "unsupported", so it lands in the
     // companion log the user shares.
     if event.is_some_and(|event| {
-        event.ends_with("_diag")
-            || matches!(event, "objective_feed_unclassified" | "soul_deny_diag" | "soul_gold_diag")
+        event.ends_with("_diag") || event == "objective_feed_unclassified"
     }) {
         log::info!(
             target: "companion::bridge_listener",
