@@ -1128,27 +1128,36 @@ describe("death_http_bridge", () => {
         ]);
     });
 
-    test("a deny indicator also emits a sequence-less soul_deny_diag with its shape", () => {
+    test("every new soul indicator emits a sequence-less soul_indicator_diag with its shape", () => {
         const harness = createHarness();
         harness.spawnEventIndicator({ kind: "deny", text: "88" });
         harness.advanceSoulDenyScan();
+        harness.spawnEventIndicator({ kind: "gold_small", name: "GS1", under: "feedback", text: "+25" });
+        harness.advanceSoulDenyScan();
 
-        const diag = harness.events("soul_deny_diag");
-        expect(diag).toHaveLength(1);
-        expect(diag[0].classes).toContain("deny");
-        expect(diag[0].text).toBe("88");
-        expect(diag[0]).not.toHaveProperty("sequence");
+        const diag = harness.events("soul_indicator_diag");
+        const denyDiag = diag.find((entry) => entry.match === "deny");
+        expect(denyDiag).toBeDefined();
+        expect(denyDiag.classes).toContain("deny");
+        expect(denyDiag.text).toBe("88");
+        expect(denyDiag.where).toBe("HudEventIndicatorsPanel");
+        expect(denyDiag).not.toHaveProperty("sequence");
+
+        const goldSmall = diag.find((entry) => entry.match === "gold_small");
+        expect(goldSmall).toBeDefined();
+        expect(goldSmall.text).toBe("+25");
+        expect(goldSmall.where).toBe("DamageFeedbackDisplay");
     });
 
-    test("the first few soul-gain indicators emit a capped soul_gold_diag shape dump", () => {
+    test("the soul_indicator_diag shape dump is capped so a full match cannot flood the log", () => {
         const harness = createHarness();
-        for (let i = 0; i < 9; i++) {
+        for (let i = 0; i < 70; i++) {
             harness.spawnEventIndicator({ kind: "gold", name: `Gold${i}`, text: String(i) });
             harness.advanceSoulDenyScan();
         }
 
-        const diag = harness.events("soul_gold_diag");
-        expect(diag).toHaveLength(6); // soulGoldDiagBudget
+        const diag = harness.events("soul_indicator_diag");
+        expect(diag).toHaveLength(60); // soulDiagBudget
         expect(diag[0].match).toBe("gold");
         expect(diag[0].classes).toContain("gold");
         expect(harness.events("soul_deny")).toHaveLength(0);

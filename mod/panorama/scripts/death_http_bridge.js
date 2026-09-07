@@ -655,9 +655,14 @@
     // ---------------------------------------------------------------
     var EVENT_INDICATOR_IDS = ["HudEventIndicatorsPanel", "DamageFeedbackDisplay"];
     var SOUL_DENY_CLASS = "deny";
-    var SOUL_GOLD_CLASSES = ["gold", "gold_small"];
-    // Every real indicator instance owns one of these; used to keep the
-    // HUD-wide ".deny" fallback from matching an unrelated "deny" class.
+    // Captured live: when an enemy denies YOUR orb you get ".gold_small" (a
+    // reduced gain), never ".deny". So ".deny" is still the candidate for the
+    // opposite -- YOU denying THEIR orb -- but that has not been captured yet,
+    // and it may instead show as a plain ".gold". The diagnostics below log
+    // every new soul indicator (".deny", ".gold", ".gold_small"), tagged with
+    // the panel it sat under, so a "you deny them" capture settles it.
+    var SOUL_DIAG_CLASSES = ["deny", "gold", "gold_small"];
+    // Keep the HUD-wide ".deny" fallback from matching an unrelated "deny".
     var INDICATOR_INSTANCE_HINT = "HudIndicatorContainer";
     var INDICATOR_CLASS_PROBES = [
         "deny", "gold", "gold_small", "crit", "batched", "buffed", "heal",
@@ -666,8 +671,8 @@
         "WindowRoot", "HudIndicatorContainer"
     ];
     var creditedDenyPanels = [];
-    var creditedGoldDiagPanels = [];
-    var soulGoldDiagBudget = 6; // one-off .gold shape dump; cannot spam
+    var creditedSoulDiagPanels = [];
+    var soulDiagBudget = 60; // generous shape dump for one targeted test session
     var soulDenyPollCounter = 0;
     var SOUL_DENY_POLL_INTERVAL_POLLS = 3; // ~0.3s at POLL_INTERVAL_SECONDS = 0.1
 
@@ -724,7 +729,7 @@
         soulDenyPollCounter = 0;
 
         creditedDenyPanels = prunedValidPanels(creditedDenyPanels);
-        creditedGoldDiagPanels = prunedValidPanels(creditedGoldDiagPanels);
+        creditedSoulDiagPanels = prunedValidPanels(creditedSoulDiagPanels);
 
         var denies = collectIndicatorInstances(root, SOUL_DENY_CLASS, true);
         for (var i = 0; i < denies.length; i++) {
@@ -734,28 +739,39 @@
             }
             creditedDenyPanels.push(panel);
             emitAction("soul_deny", { detection: "feedback_indicator_class:deny" });
-            emit("soul_deny_diag", {
-                classes: indicatorClassList(panel),
-                text: indicatorText(panel)
-            });
         }
 
-        // Shape dump of the first few soul-gain indicators this session, so a
-        // live capture shows what a *secure* looks like and whether a deny is
-        // actually a flavoured ".gold". Capped by soulGoldDiagBudget.
-        for (var g = 0; g < SOUL_GOLD_CLASSES.length && soulGoldDiagBudget > 0; g++) {
-            var golds = collectIndicatorInstances(root, SOUL_GOLD_CLASSES[g], false);
-            for (var k = 0; k < golds.length && soulGoldDiagBudget > 0; k++) {
-                if (creditedGoldDiagPanels.indexOf(golds[k]) !== -1) {
-                    continue;
+        // Shape dump: every new soul indicator this session, tagged with which
+        // panel hosted it, so a "you deny their orb" capture shows the class
+        // and where it lives. Capped so a full match cannot flood the log.
+        if (soulDiagBudget <= 0) {
+            return;
+        }
+        var scopes = [];
+        for (var s = 0; s < EVENT_INDICATOR_IDS.length; s++) {
+            var scopePanel = findCachedChildById(root, EVENT_INDICATOR_IDS[s]);
+            if (isValidPanel(scopePanel)) {
+                scopes.push({ where: EVENT_INDICATOR_IDS[s], panel: scopePanel });
+            }
+        }
+        scopes.push({ where: "hud_wide", panel: root });
+        for (var sc = 0; sc < scopes.length && soulDiagBudget > 0; sc++) {
+            for (var cl = 0; cl < SOUL_DIAG_CLASSES.length && soulDiagBudget > 0; cl++) {
+                var hits = findChildrenWithClass(scopes[sc].panel, SOUL_DIAG_CLASSES[cl]);
+                for (var h = 0; h < hits.length && soulDiagBudget > 0; h++) {
+                    var found = hits[h];
+                    if (!isValidPanel(found) || creditedSoulDiagPanels.indexOf(found) !== -1) {
+                        continue;
+                    }
+                    creditedSoulDiagPanels.push(found);
+                    soulDiagBudget--;
+                    emit("soul_indicator_diag", {
+                        where: scopes[sc].where,
+                        match: SOUL_DIAG_CLASSES[cl],
+                        classes: indicatorClassList(found),
+                        text: indicatorText(found)
+                    });
                 }
-                creditedGoldDiagPanels.push(golds[k]);
-                soulGoldDiagBudget--;
-                emit("soul_gold_diag", {
-                    match: SOUL_GOLD_CLASSES[g],
-                    classes: indicatorClassList(golds[k]),
-                    text: indicatorText(golds[k])
-                });
             }
         }
     }
@@ -809,8 +825,8 @@
         creditedShieldPanels = [];
         supportPollCounter = 0;
         creditedDenyPanels = [];
-        creditedGoldDiagPanels = [];
-        soulGoldDiagBudget = 6;
+        creditedSoulDiagPanels = [];
+        soulDiagBudget = 60;
         soulDenyPollCounter = 0;
     }
 
