@@ -126,6 +126,12 @@ struct PersistedTriggers {
         alias = "damage_taken_intensity_curve"
     )]
     damage_taken_curve: PersistedIntensityCurve,
+    // Healing Received and Damage Dealt gained their own intensity curves
+    // after schema 7; an older file just gets the starter shapes.
+    #[serde(default = "default_healing_received_curve")]
+    healing_received_curve: PersistedIntensityCurve,
+    #[serde(default = "default_damage_given_curve")]
+    damage_given_curve: PersistedIntensityCurve,
     // The earlier amount-gated "healing given" trigger. Deserialized only so a
     // file that still has it loads; its enabled state migrates into
     // `ally_healed` in `to_app`, and it is never written back.
@@ -147,6 +153,12 @@ fn default_disabled_trigger() -> PersistedTrigger {
 }
 fn default_intensity_curve() -> PersistedIntensityCurve {
     PersistedIntensityCurve::from_curve(&IntensityCurve::default())
+}
+fn default_healing_received_curve() -> PersistedIntensityCurve {
+    PersistedIntensityCurve::from_curve(&IntensityCurve::starter_healing())
+}
+fn default_damage_given_curve() -> PersistedIntensityCurve {
+    PersistedIntensityCurve::from_curve(&IntensityCurve::starter_damage_given())
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -514,6 +526,8 @@ impl Default for PersistedTriggers {
             game_won: disabled_trigger(vibrate.clone()),
             damage_taken_intensity: disabled_trigger(vibrate),
             damage_taken_curve: default_intensity_curve(),
+            healing_received_curve: default_healing_received_curve(),
+            damage_given_curve: default_damage_given_curve(),
             healing_given: None,
         }
     }
@@ -695,6 +709,12 @@ impl PersistedTriggers {
             damage_taken_curve: PersistedIntensityCurve::from_curve(
                 &triggers.damage_taken_curve,
             ),
+            healing_received_curve: PersistedIntensityCurve::from_curve(
+                &triggers.healing_received_curve,
+            ),
+            damage_given_curve: PersistedIntensityCurve::from_curve(
+                &triggers.damage_given_curve,
+            ),
             healing_given: None,
         }
     }
@@ -731,6 +751,8 @@ impl PersistedTriggers {
             game_won: self.game_won.to_app(),
             damage_taken_intensity: self.damage_taken_intensity.to_app(),
             damage_taken_curve: self.damage_taken_curve.to_curve(),
+            healing_received_curve: self.healing_received_curve.to_curve(),
+            damage_given_curve: self.damage_given_curve.to_curve(),
             priority_order: self
                 .priority_order
                 .iter()
@@ -771,6 +793,10 @@ impl PersistedTriggers {
         self.damage_taken_intensity.actions.vibrate.normalize();
         self.damage_taken_curve =
             PersistedIntensityCurve::from_curve(&self.damage_taken_curve.to_curve());
+        self.healing_received_curve =
+            PersistedIntensityCurve::from_curve(&self.healing_received_curve.to_curve());
+        self.damage_given_curve =
+            PersistedIntensityCurve::from_curve(&self.damage_given_curve.to_curve());
         if let Some(legacy) = &mut self.healing_given {
             legacy.normalize();
         }
@@ -1691,6 +1717,40 @@ mod tests {
         assert_eq!(restored.resting_strength, 0);
         assert!(restored.triggers.death_hold_until_respawn);
         assert!(restored.triggers.suppress_triggers_while_dead);
+    }
+
+    #[test]
+    fn healing_and_damage_dealt_curves_round_trip_and_default_when_absent() {
+        let mut original = AppState::default();
+        original.triggers.healing_received_curve.window_seconds = 7.0;
+        original.triggers.healing_received_curve.points[0].level = 4.0;
+        original.triggers.damage_given_curve.pulse_seconds = 2.0;
+
+        let persisted = PersistedState::from_app(&original);
+        let restored = persisted.restore_app().triggers;
+        assert_eq!(restored.healing_received_curve.window_seconds, 7.0);
+        assert_eq!(restored.healing_received_curve.points[0].level, 4.0);
+        assert_eq!(restored.damage_given_curve.pulse_seconds, 2.0);
+
+        // A schema-7 file with no curve fields for these two gets the starters.
+        let mut value = serde_json::to_value(&persisted).unwrap();
+        let triggers = value["triggers"].as_object_mut().unwrap();
+        triggers.remove("healing_received_curve");
+        triggers.remove("damage_given_curve");
+        let restored = serde_json::from_value::<PersistedState>(value)
+            .unwrap()
+            .normalized()
+            .unwrap()
+            .restore_app()
+            .triggers;
+        assert_eq!(
+            restored.healing_received_curve,
+            crate::action::IntensityCurve::starter_healing()
+        );
+        assert_eq!(
+            restored.damage_given_curve,
+            crate::action::IntensityCurve::starter_damage_given()
+        );
     }
 
     #[test]
