@@ -149,10 +149,11 @@ function createHarness({
     const eventIndicators = createPanel({ id: "HudEventIndicatorsPanel", children: [] });
     const healthRegenAndTotal = createPanel({ id: "HealthRegenAndTotal", children: [] });
     const feedbackDisplay = createPanel({
-        id: "CitadelDamageFeedbackDisplay",
+        id: "DamageFeedbackDisplay",
         paneltype: "CitadelDamageFeedbackDisplay",
         children: [],
     });
+    let feedbackIndicatorInstances = [];
     let healthLabel = createPanel({ classes: ["currentHealthLabel"], paneltype: "Label", text: "600" });
     const healthBandWrapper = createPanel({ classes: [], children: [healthLabel] });
     const gunElement = createPanel({ classes: ["ability_element_gun"], children: [] });
@@ -407,27 +408,36 @@ function createHarness({
             );
         },
         setFeedbackIndicatorText: (label, amount) => { label.setText(String(amount)); },
-        // A floating event indicator under #HudEventIndicatorsPanel: `kind` is
-        // the category class ("deny" for a soul denied, "gold" for a soul
-        // gained, ...).
-        spawnEventIndicator: ({ kind = "deny", name = "SoulIndicator" } = {}) => {
+        // A floating event indicator: `kind` is the category class ("deny" for
+        // a soul denied, "gold"/"gold_small" for a soul gained, ...). `under`
+        // picks the host panel -- "events" (#HudEventIndicatorsPanel, default)
+        // or "feedback" (#DamageFeedbackDisplay) -- since a deny can render in
+        // either. `text` sets the HudIndicatorText amount.
+        spawnEventIndicator: ({ kind = "deny", name = "SoulIndicator", under = "events", text = "" } = {}) => {
             const instance = createPanel({
                 id: name,
                 classes: [kind, "WindowRoot"],
                 children: [
                     createPanel({ classes: ["HudIndicatorContainer"], children: [
-                        createPanel({ classes: ["HudIndicatorText"], paneltype: "Label", text: "" }),
+                        createPanel({ classes: ["HudIndicatorText"], paneltype: "Label", text: String(text) }),
                     ] }),
                 ],
             });
-            eventIndicatorInstances = [...eventIndicatorInstances, instance];
-            eventIndicators.setChildren(eventIndicatorInstances);
+            if (under === "feedback") {
+                feedbackIndicatorInstances = [...feedbackIndicatorInstances, instance];
+                feedbackDisplay.setChildren(feedbackIndicatorInstances);
+            } else {
+                eventIndicatorInstances = [...eventIndicatorInstances, instance];
+                eventIndicators.setChildren(eventIndicatorInstances);
+            }
             return instance;
         },
         removeEventIndicator: (instance) => {
             instance.setValid(false);
             eventIndicatorInstances = eventIndicatorInstances.filter((candidate) => candidate !== instance);
             eventIndicators.setChildren(eventIndicatorInstances);
+            feedbackIndicatorInstances = feedbackIndicatorInstances.filter((candidate) => candidate !== instance);
+            feedbackDisplay.setChildren(feedbackIndicatorInstances);
         },
         advanceSoulDenyScan: () => advancePolls(3),
         setParryCooldown: (on) => { gunElement.setClasses(on ? ["ability_element_gun", "parry_on_cooldown"] : ["ability_element_gun"]); },
@@ -1105,6 +1115,42 @@ describe("death_http_bridge", () => {
         harness.spawnEventIndicator({ kind: "deny" });
         harness.advanceSoulDenyScan();
 
+        expect(harness.events("soul_deny")).toHaveLength(0);
+    });
+
+    test("emits soul_deny for a deny indicator hosted by #DamageFeedbackDisplay", () => {
+        const harness = createHarness();
+        harness.spawnEventIndicator({ kind: "deny", under: "feedback", text: "142" });
+        harness.advanceSoulDenyScan();
+
+        expect(harness.events("soul_deny")).toEqual([
+            expect.objectContaining({ detection: "feedback_indicator_class:deny" }),
+        ]);
+    });
+
+    test("a deny indicator also emits a sequence-less soul_deny_diag with its shape", () => {
+        const harness = createHarness();
+        harness.spawnEventIndicator({ kind: "deny", text: "88" });
+        harness.advanceSoulDenyScan();
+
+        const diag = harness.events("soul_deny_diag");
+        expect(diag).toHaveLength(1);
+        expect(diag[0].classes).toContain("deny");
+        expect(diag[0].text).toBe("88");
+        expect(diag[0]).not.toHaveProperty("sequence");
+    });
+
+    test("the first few soul-gain indicators emit a capped soul_gold_diag shape dump", () => {
+        const harness = createHarness();
+        for (let i = 0; i < 9; i++) {
+            harness.spawnEventIndicator({ kind: "gold", name: `Gold${i}`, text: String(i) });
+            harness.advanceSoulDenyScan();
+        }
+
+        const diag = harness.events("soul_gold_diag");
+        expect(diag).toHaveLength(6); // soulGoldDiagBudget
+        expect(diag[0].match).toBe("gold");
+        expect(diag[0].classes).toContain("gold");
         expect(harness.events("soul_deny")).toHaveLength(0);
     });
 
