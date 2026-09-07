@@ -1,4 +1,6 @@
 use std::fmt;
+use std::thread;
+use std::time::Duration;
 
 use crate::action::ResolvedVibrateAction;
 use lovense::{Connection as LovenseConnection, Error as LovenseError, LovenseClient, Toy};
@@ -138,6 +140,10 @@ impl ProviderError {
     }
 }
 
+fn whole_second_duration(duration_secs: f32) -> Option<u32> {
+    (duration_secs >= 1.0 && duration_secs.fract() == 0.0).then_some(duration_secs as u32)
+}
+
 pub struct ConnectedProvider(LovenseClient);
 impl ConnectedProvider {
     pub fn connect(setup: &LovenseSetup) -> Result<Self, ProviderError> {
@@ -160,13 +166,44 @@ impl ConnectedProvider {
             .vibrate(toy, TEST_VIBRATE_STRENGTH, TEST_VIBRATE_DURATION_SECS)?;
         Ok(())
     }
+    /// Runs one resolved trigger action. A whole-second duration is sent as
+    /// the Standard API's own timed `Vibrate` command, so the toy runs it
+    /// independently and this returns immediately. A sub-second duration
+    /// cannot be expressed that way (`timeSec` only takes whole seconds), so
+    /// instead this holds the toy steady and blocks the calling thread for
+    /// the (well under one second) duration before sending an explicit stop.
     pub fn execute(
         &self,
         target: Option<&ProviderTarget>,
         action: ResolvedVibrateAction,
     ) -> Result<(), ProviderError> {
         let toy = target.and_then(|target| target.toy.as_ref());
-        self.0.vibrate(toy, action.strength, action.duration_secs)?;
+        match whole_second_duration(action.duration_secs) {
+            Some(duration_secs) => {
+                self.0.vibrate(toy, action.strength, duration_secs)?;
+            }
+            None => {
+                self.0.vibrate_steady(toy, action.strength)?;
+                thread::sleep(Duration::from_secs_f32(action.duration_secs.max(0.0)));
+                self.0.stop(toy)?;
+            }
+        }
+        Ok(())
+    }
+    /// Holds the toy at `strength` with no time limit between trigger effects.
+    /// A strength of 0 stops the toy instead of sending a zero-strength
+    /// vibration.
+    pub fn set_resting(
+        &self,
+        target: Option<&ProviderTarget>,
+        strength: u8,
+    ) -> Result<(), ProviderError> {
+        let toy = target.and_then(|target| target.toy.as_ref());
+        if strength == 0 {
+            self.0.stop(toy)?;
+        } else {
+            self.0.vibrate_steady(toy, strength)?;
+        }
         Ok(())
     }
     pub fn disconnect(self) -> Result<(), ProviderError> {
@@ -177,6 +214,15 @@ impl ConnectedProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_second_durations_are_recognized_and_sub_second_ones_are_not() {
+        assert_eq!(whole_second_duration(1.0), Some(1));
+        assert_eq!(whole_second_duration(60.0), Some(60));
+        assert_eq!(whole_second_duration(0.25), None);
+        assert_eq!(whole_second_duration(0.75), None);
+        assert_eq!(whole_second_duration(0.0), None);
+    }
 
     #[test]
     fn setup_present_requires_domain_and_port() {

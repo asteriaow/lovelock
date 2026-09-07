@@ -90,6 +90,13 @@ pub struct LocalPlayerDeath {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalPlayerRespawn {
+    pub schema: u32,
+    pub session_id: String,
+    pub client_time_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CountTrigger {
     pub schema: u32,
     pub session_id: String,
@@ -113,15 +120,40 @@ pub struct AbilityTrigger {
     pub charges_after: Option<u64>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A reported change in the local player's combined health-and-shield total:
+/// how much of it was lost (damage) or restored (healing) since the last
+/// report, plus the current health for context.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VitalsTrigger {
+    pub schema: u32,
+    pub session_id: String,
+    pub client_time_ms: u64,
+    pub sequence: u64,
+    pub detection: String,
+    pub amount: f64,
+    pub health_after: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum BridgeEvent {
     HookReady(HookReady),
     AbilityCatalog(AbilityCatalog),
     LocalPlayerDeath(LocalPlayerDeath),
+    LocalPlayerRespawn(LocalPlayerRespawn),
     LocalPlayerKill(CountTrigger),
     LocalPlayerAssist(CountTrigger),
+    AllyHealed(CountTrigger),
+    AllyShielded(CountTrigger),
+    SoulDeny(CountTrigger),
+    SoulSecure(CountTrigger),
+    ParrySuccess(CountTrigger),
+    ParryFail(CountTrigger),
+    DamageTakenIntensity(CountTrigger),
     AbilityUsed(AbilityTrigger),
     AbilityCooldownReady(AbilityTrigger),
+    DamageTaken(VitalsTrigger),
+    HealingReceived(VitalsTrigger),
+    DamageGiven(VitalsTrigger),
 }
 
 impl BridgeEvent {
@@ -130,10 +162,21 @@ impl BridgeEvent {
             Self::HookReady(_) => "hook_ready",
             Self::AbilityCatalog(_) => "ability_catalog",
             Self::LocalPlayerDeath(_) => "local_player_death",
+            Self::LocalPlayerRespawn(_) => "local_player_respawn",
             Self::LocalPlayerKill(_) => "local_player_kill",
             Self::LocalPlayerAssist(_) => "local_player_assist",
+            Self::AllyHealed(_) => "ally_healed",
+            Self::AllyShielded(_) => "ally_shielded",
+            Self::SoulDeny(_) => "soul_deny",
+            Self::SoulSecure(_) => "soul_secure",
+            Self::ParrySuccess(_) => "parry_success",
+            Self::ParryFail(_) => "parry_fail",
+            Self::DamageTakenIntensity(_) => "damage_taken_intensity",
             Self::AbilityUsed(_) => "ability_used",
             Self::AbilityCooldownReady(_) => "ability_cooldown_ready",
+            Self::DamageTaken(_) => "damage_taken",
+            Self::HealingReceived(_) => "healing_received",
+            Self::DamageGiven(_) => "damage_given",
         }
     }
 }
@@ -163,6 +206,12 @@ enum WireEvent {
         sequence: u64,
         detection: String,
     },
+    #[serde(rename = "local_player_respawn")]
+    LocalPlayerRespawn {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+    },
     #[serde(rename = "local_player_kill")]
     LocalPlayerKill {
         schema: u32,
@@ -182,6 +231,72 @@ enum WireEvent {
         detection: String,
         assists_before: Option<u64>,
         assists_after: Option<u64>,
+    },
+    #[serde(rename = "ally_healed")]
+    AllyHealed {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "ally_shielded")]
+    AllyShielded {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "soul_deny")]
+    SoulDeny {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "soul_secure")]
+    SoulSecure {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "parry_success")]
+    ParrySuccess {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "parry_fail")]
+    ParryFail {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "damage_taken_intensity")]
+    DamageTakenIntensity {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "damage_given")]
+    DamageGiven {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+        amount: f64,
+        health: Option<f64>,
     },
     #[serde(rename = "ability_used")]
     AbilityUsed {
@@ -206,6 +321,26 @@ enum WireEvent {
         detection: String,
         charges_before: Option<u64>,
         charges_after: Option<u64>,
+    },
+    #[serde(rename = "damage_taken")]
+    DamageTaken {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+        amount: f64,
+        health: Option<f64>,
+    },
+    #[serde(rename = "healing_received")]
+    HealingReceived {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+        amount: f64,
+        health: Option<f64>,
     },
 }
 
@@ -261,6 +396,15 @@ pub fn parse_bridge_record(record: &str) -> Option<BridgeEvent> {
             sequence,
             detection,
         })),
+        WireEvent::LocalPlayerRespawn {
+            schema,
+            session_id,
+            client_time_ms,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::LocalPlayerRespawn(LocalPlayerRespawn {
+            schema,
+            session_id,
+            client_time_ms,
+        })),
         WireEvent::LocalPlayerKill {
             schema,
             session_id,
@@ -294,6 +438,128 @@ pub fn parse_bridge_record(record: &str) -> Option<BridgeEvent> {
             detection,
             count_before: assists_before,
             count_after: assists_after,
+        })),
+        WireEvent::AllyHealed {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::AllyHealed(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::AllyShielded {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::AllyShielded(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::SoulDeny {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::SoulDeny(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::SoulSecure {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::SoulSecure(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::ParrySuccess {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::ParrySuccess(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::ParryFail {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::ParryFail(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::DamageTakenIntensity {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::DamageTakenIntensity(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::DamageGiven {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            amount,
+            health,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::DamageGiven(VitalsTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            amount,
+            health_after: health,
         })),
         WireEvent::AbilityUsed {
             schema,
@@ -337,6 +603,40 @@ pub fn parse_bridge_record(record: &str) -> Option<BridgeEvent> {
             charges_before,
             charges_after,
         })),
+        WireEvent::DamageTaken {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            amount,
+            health,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::DamageTaken(VitalsTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            amount,
+            health_after: health,
+        })),
+        WireEvent::HealingReceived {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            amount,
+            health,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::HealingReceived(VitalsTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            amount,
+            health_after: health,
+        })),
         _ => None,
     }
 }
@@ -358,6 +658,11 @@ pub struct ListenerStatus {
     pub last_activity_at: Option<Instant>,
     pub last_event_at: Option<Instant>,
     pub mod_version: ModVersionObservation,
+    /// When the listener most recently entered [`ListenerPhase::Listening`].
+    /// Paired with `last_activity_at` this tells "watching a file that never
+    /// grows" (Deadlock running without `-condebug`) apart from "watching a
+    /// file that is quiet right now".
+    pub listening_since: Option<Instant>,
 }
 
 impl Default for ListenerStatus {
@@ -369,6 +674,7 @@ impl Default for ListenerStatus {
             last_activity_at: None,
             last_event_at: None,
             mod_version: ModVersionObservation::Unknown,
+            listening_since: None,
         }
     }
 }
@@ -387,6 +693,17 @@ impl ListenerStatus {
             Some(idle) => self.is_listening() && idle <= maximum_idle,
             None => false,
         }
+    }
+
+    /// How long the listener has been attached to `console.log` without a
+    /// single byte arriving. `None` unless it is listening and has seen
+    /// nothing at all since it attached. A non-trivial value here almost
+    /// always means Deadlock is running without `-condebug`.
+    pub fn silent_since_attach(&self) -> Option<Duration> {
+        if self.phase != ListenerPhase::Listening || self.last_activity_at.is_some() {
+            return None;
+        }
+        self.listening_since.map(|since| since.elapsed())
     }
 }
 
@@ -474,6 +791,11 @@ impl ConsoleLogListener {
             status.last_activity_at = None;
             status.last_event_at = None;
             status.mod_version = ModVersionObservation::Unknown;
+            status.listening_since = if initial_phase == ListenerPhase::Listening {
+                Some(Instant::now())
+            } else {
+                None
+            };
         }
         if let Some(log) = initial_log.as_mut()
             && let Err(error) = seed_metadata_from_tail(log, &self.status)
@@ -538,6 +860,7 @@ impl ConsoleLogListener {
         status.phase = ListenerPhase::Stopped;
         status.current_error = None;
         status.mod_version = ModVersionObservation::Unknown;
+        status.listening_since = None;
         if had_worker || previous_phase != ListenerPhase::Stopped {
             log::info!(
                 target: "companion::bridge_listener",
@@ -909,9 +1232,26 @@ fn log_rejected_bridge_record(line: &str) {
     };
     let event = value.get("event").and_then(serde_json::Value::as_str);
     let schema = value.get("schema").and_then(serde_json::Value::as_u64);
-    let reason = if schema.is_some_and(|schema| schema != u64::from(BRIDGE_SCHEMA))
-        || !matches!(event, Some("hook_ready" | "local_player_death"))
-    {
+    let known_event = matches!(
+        event,
+        Some(
+            "hook_ready"
+                | "local_player_death"
+                | "local_player_respawn"
+                | "damage_taken"
+                | "healing_received"
+                | "ally_healed"
+                | "ally_shielded"
+                | "soul_deny"
+                | "soul_secure"
+                | "parry_success"
+                | "parry_fail"
+                | "damage_taken_intensity"
+                | "damage_given"
+        )
+    );
+    let schema_mismatch = schema.is_some_and(|schema| schema != u64::from(BRIDGE_SCHEMA));
+    let reason = if schema_mismatch || !known_event {
         "unsupported"
     } else {
         "malformed"
@@ -948,13 +1288,13 @@ fn seed_metadata_from_tail(
     if start > 0 {
         let _ = lines.next();
     }
-    let newest = lines.filter_map(|line| {
+    let mut newest = lines.filter_map(|line| {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         std::str::from_utf8(line)
             .ok()
             .and_then(parse_bridge_metadata)
     });
-    if let Some(metadata) = newest.last() {
+    if let Some(metadata) = newest.next_back() {
         lock_unpoisoned(status).mod_version = metadata.mod_version;
     }
     Ok(())
@@ -995,6 +1335,13 @@ fn set_phase(
     let previous_phase = status.phase;
     status.phase = phase;
     status.current_error = current_error.clone();
+    if phase == ListenerPhase::Listening {
+        if previous_phase != ListenerPhase::Listening {
+            status.listening_since = Some(Instant::now());
+        }
+    } else {
+        status.listening_since = None;
+    }
     match phase {
         ListenerPhase::Failed => log::warn!(
             target: "companion::bridge_listener",
@@ -1120,10 +1467,18 @@ mod tests {
     const VERSIONED_READY_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"hook_ready\",\"mod_version\":\"0.1.0\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000000,\"poll_interval_ms\":100}";
     const CATALOG_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"ability_catalog\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000100,\"abilities\":[{\"ability_slot\":1,\"ability_name\":\"Kinetic Pulse\"},{\"ability_slot\":5}]}";
     const DEATH_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"local_player_death\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000123,\"sequence\":7,\"detection\":\"top_bar_local_player_dead_class\"}";
+    const RESPAWN_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"local_player_respawn\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000140}";
     const KILL_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"local_player_kill\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000150,\"sequence\":8,\"detection\":\"top_bar_kills_stat_increment\",\"kills_before\":2,\"kills_after\":3}";
     const ASSIST_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"local_player_assist\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000175,\"sequence\":9,\"detection\":\"top_bar_assists_stat_increment\",\"assists_before\":0,\"assists_after\":1}";
     const ABILITY_USED_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"ability_used\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000200,\"sequence\":8,\"ability_slot\":2,\"ability_name\":\"Kinetic Pulse\",\"detection\":\"charge_decrement\",\"charges_before\":3,\"charges_after\":2}";
     const ABILITY_READY_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"ability_cooldown_ready\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000300,\"sequence\":9,\"ability_slot\":4,\"detection\":\"cooldown_finished\"}";
+    const DAMAGE_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"damage_taken\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000400,\"sequence\":10,\"detection\":\"top_bar_health_and_shield_labels\",\"amount\":180.0,\"health\":420.0}";
+    const HEALING_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"healing_received\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000500,\"sequence\":11,\"detection\":\"top_bar_health_and_shield_labels\",\"amount\":90.0,\"health\":510.0}";
+    const ALLY_HEALED_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"ally_healed\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000550,\"sequence\":12,\"detection\":\"impact_instance_class:is_heal\"}";
+    const ALLY_SHIELDED_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"ally_shielded\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000560,\"sequence\":13,\"detection\":\"impact_child_bar:barrierGained\"}";
+    const SOUL_DENY_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"soul_deny\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000570,\"sequence\":14,\"detection\":\"feedback_indicator_class:deny\"}";
+    const PARRY_FAIL_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"parry_fail\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000580,\"sequence\":15,\"detection\":\"stunned_after_parry\"}";
+    const DAMAGE_GIVEN_RECORD: &str = "[DEADLOCK_DEATH_HOOK]{\"schema\":1,\"event\":\"damage_given\",\"session_id\":\"abc-1\",\"client_time_ms\":1700000000590,\"sequence\":16,\"detection\":\"feedback_damage_numbers\",\"amount\":275.0}";
 
     #[test]
     fn metadata_parser_accepts_versions_without_accepting_future_events() {
@@ -1179,6 +1534,8 @@ mod tests {
             ASSIST_RECORD,
             ABILITY_USED_RECORD,
             ABILITY_READY_RECORD,
+            DAMAGE_RECORD,
+            HEALING_RECORD,
         ] {
             let versioned = record.replacen(
                 "{\"schema\":1,",
@@ -1228,6 +1585,14 @@ mod tests {
             }))
         );
         assert_eq!(
+            parse_bridge_record(RESPAWN_RECORD),
+            Some(BridgeEvent::LocalPlayerRespawn(LocalPlayerRespawn {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_140,
+            }))
+        );
+        assert_eq!(
             parse_bridge_record(KILL_RECORD),
             Some(BridgeEvent::LocalPlayerKill(CountTrigger {
                 schema: 1,
@@ -1249,6 +1614,66 @@ mod tests {
                 detection: "top_bar_assists_stat_increment".to_owned(),
                 count_before: Some(0),
                 count_after: Some(1),
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(ALLY_HEALED_RECORD),
+            Some(BridgeEvent::AllyHealed(CountTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_550,
+                sequence: 12,
+                detection: "impact_instance_class:is_heal".to_owned(),
+                count_before: None,
+                count_after: None,
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(ALLY_SHIELDED_RECORD),
+            Some(BridgeEvent::AllyShielded(CountTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_560,
+                sequence: 13,
+                detection: "impact_child_bar:barrierGained".to_owned(),
+                count_before: None,
+                count_after: None,
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(SOUL_DENY_RECORD),
+            Some(BridgeEvent::SoulDeny(CountTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_570,
+                sequence: 14,
+                detection: "feedback_indicator_class:deny".to_owned(),
+                count_before: None,
+                count_after: None,
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(PARRY_FAIL_RECORD),
+            Some(BridgeEvent::ParryFail(CountTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_580,
+                sequence: 15,
+                detection: "stunned_after_parry".to_owned(),
+                count_before: None,
+                count_after: None,
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(DAMAGE_GIVEN_RECORD),
+            Some(BridgeEvent::DamageGiven(VitalsTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_590,
+                sequence: 16,
+                detection: "feedback_damage_numbers".to_owned(),
+                amount: 275.0,
+                health_after: None,
             }))
         );
         assert_eq!(
@@ -1277,6 +1702,30 @@ mod tests {
                 detection: "cooldown_finished".to_owned(),
                 charges_before: None,
                 charges_after: None,
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(DAMAGE_RECORD),
+            Some(BridgeEvent::DamageTaken(VitalsTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_400,
+                sequence: 10,
+                detection: "top_bar_health_and_shield_labels".to_owned(),
+                amount: 180.0,
+                health_after: Some(420.0),
+            }))
+        );
+        assert_eq!(
+            parse_bridge_record(HEALING_RECORD),
+            Some(BridgeEvent::HealingReceived(VitalsTrigger {
+                schema: 1,
+                session_id: "abc-1".to_owned(),
+                client_time_ms: 1_700_000_000_500,
+                sequence: 11,
+                detection: "top_bar_health_and_shield_labels".to_owned(),
+                amount: 90.0,
+                health_after: Some(510.0),
             }))
         );
     }
@@ -1350,6 +1799,28 @@ mod tests {
             parse_bridge_record(ABILITY_USED_RECORD).expect("parse expected ability use")
         );
         assert!(listener.status().last_event_at.is_some());
+    }
+
+    #[test]
+    fn silent_since_attach_reports_until_first_bytes_then_clears() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let path = temp.path().join("console.log");
+        fs::write(&path, "old output that predates the listener\n").expect("seed history");
+        let mut listener = ConsoleLogListener::new();
+        let _events = listener.subscribe();
+        listener.start(path.clone()).expect("start listener");
+        wait_for_phase(&listener, ListenerPhase::Listening);
+
+        // Attached to a file that is not growing: the silence timer is running.
+        let silent = listener
+            .status()
+            .silent_since_attach()
+            .expect("silent while nothing has arrived");
+        assert!(silent <= Duration::from_secs(5));
+
+        append(&path, "fresh line\n");
+        wait_until(|| listener.status().last_activity_at.is_some());
+        assert_eq!(listener.status().silent_since_attach(), None);
     }
 
     #[test]
