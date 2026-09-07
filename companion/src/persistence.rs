@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 use crate::action::{
-    IntensityCurve, IntensityPoint, MAX_VIBRATE_DURATION, MAX_VIBRATE_STRENGTH,
-    MIN_VIBRATE_DURATION, MIN_VIBRATE_STRENGTH, VibrateActionSettings, VibrateFixedSettings,
-    VibrateIntervalSettings, VibrateMode, nearest_duration_step,
+    DEFAULT_VIBRATE_DURATION, DEFAULT_VIBRATE_STRENGTH, IntensityCurve, IntensityPoint,
+    MAX_VIBRATE_DURATION, MAX_VIBRATE_STRENGTH, MIN_VIBRATE_DURATION, MIN_VIBRATE_STRENGTH,
+    VibrateActionSettings, VibrateFixedSettings, VibrateIntervalSettings, VibrateMode,
+    nearest_duration_step,
 };
 use crate::app::{
     AbilityFilter, AbilityTriggerSettings, AmountTriggerSettings, AppState, DEFAULT_PROFILE_NAME,
@@ -445,14 +446,14 @@ impl Default for PersistedVibrate {
         Self {
             mode: PersistedVibrateMode::Fixed,
             interval: PersistedVibrateInterval {
-                minimum_strength: MIN_VIBRATE_STRENGTH,
-                maximum_strength: MIN_VIBRATE_STRENGTH,
-                minimum_duration_seconds: MIN_VIBRATE_DURATION,
-                maximum_duration_seconds: MIN_VIBRATE_DURATION,
+                minimum_strength: DEFAULT_VIBRATE_STRENGTH,
+                maximum_strength: DEFAULT_VIBRATE_STRENGTH,
+                minimum_duration_seconds: DEFAULT_VIBRATE_DURATION,
+                maximum_duration_seconds: DEFAULT_VIBRATE_DURATION,
             },
             fixed: PersistedVibrateFixed {
-                strength: MIN_VIBRATE_STRENGTH,
-                duration_seconds: MIN_VIBRATE_DURATION,
+                strength: DEFAULT_VIBRATE_STRENGTH,
+                duration_seconds: DEFAULT_VIBRATE_DURATION,
             },
         }
     }
@@ -1753,6 +1754,8 @@ mod tests {
                 .duration_seconds,
             MAX_VIBRATE_DURATION
         );
+        // Clamped up from 0.1, then floored at the (untouched, default)
+        // minimum of this interval, which a max can never dip below.
         assert_eq!(
             normalized
                 .triggers
@@ -1762,7 +1765,7 @@ mod tests {
                 .vibrate
                 .interval
                 .maximum_duration_seconds,
-            MIN_VIBRATE_DURATION
+            DEFAULT_VIBRATE_DURATION
         );
     }
 

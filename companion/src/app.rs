@@ -2983,7 +2983,12 @@ impl AppState {
                         let response = ui.scope(|ui| {
                             let visuals = ui.visuals_mut();
                             visuals.override_text_color = Some(crate::theme::TEXT);
-                            visuals.selection.bg_fill = crate::theme::ACCENT;
+                            // The name is fully selected the moment the field
+                            // opens, so the selection colour has to sit under
+                            // TEXT-coloured glyphs. ACCENT is too light for
+                            // that; ACCENT_DIM is the same dark pairing the
+                            // selected-profile chip uses.
+                            visuals.selection.bg_fill = crate::theme::ACCENT_DIM;
                             let name = &mut self.profiles[index].name;
                             let width = (name.len() as f32 * 8.5 + 16.0).clamp(64.0, 220.0);
                             ui.add(
