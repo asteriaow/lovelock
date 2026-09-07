@@ -112,7 +112,7 @@ const NOTICE_PINK: [f32; 4] = [1.0, 0.765, 0.878, 1.0];
 /// again -- the HUD has a dedicated `deny` combat indicator for a denied soul.
 /// `DamageTakenIntensity` was folded into `DamageTaken`, which now runs the
 /// intensity curve itself.
-pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 13] = [
+pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 19] = [
     TriggerKind::Death,
     TriggerKind::Kill,
     TriggerKind::Assist,
@@ -126,6 +126,12 @@ pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 13] = [
     TriggerKind::SoulDeny,
     TriggerKind::ParrySuccess,
     TriggerKind::ParryFail,
+    TriggerKind::ObjectiveGuardian,
+    TriggerKind::ObjectiveWalker,
+    TriggerKind::ObjectiveBaseGuardian,
+    TriggerKind::ObjectiveShrine,
+    TriggerKind::ObjectivePatronWeakened,
+    TriggerKind::GameWon,
 ];
 
 /// The name every session starts with and that a state file from before
@@ -177,6 +183,18 @@ pub struct TriggerSettingsSet {
     pub parry_success: TriggerSettings,
     /// Fires when you were stunned right after starting a parry.
     pub parry_fail: TriggerSettings,
+    /// Objective destroyed on the enemy side. Each is a discrete fire-once
+    /// event with its own vibration profile so they can be toggled and tuned
+    /// independently. `guardian`/`walker` come from the persistent objectives
+    /// minimap; `base_guardian`/`shrine`/`patron_weakened` are best-effort
+    /// from the centre-screen objective-health bar.
+    pub objective_guardian: TriggerSettings,
+    pub objective_walker: TriggerSettings,
+    pub objective_base_guardian: TriggerSettings,
+    pub objective_shrine: TriggerSettings,
+    pub objective_patron_weakened: TriggerSettings,
+    /// Fires once when your team wins the match.
+    pub game_won: TriggerSettings,
     /// Retired standalone enable flag for the old health-band intensity
     /// trigger. Kept so `get`/`get_mut` stay exhaustive and an old profile
     /// still deserializes; not shown in the UI.
@@ -236,6 +254,30 @@ impl Default for TriggerSettingsSet {
                 actions: actions.clone(),
             },
             parry_fail: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            objective_guardian: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            objective_walker: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            objective_base_guardian: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            objective_shrine: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            objective_patron_weakened: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            game_won: TriggerSettings {
                 enabled: false,
                 actions: actions.clone(),
             },
@@ -384,6 +426,12 @@ pub enum TriggerKind {
     SoulSecure,
     ParrySuccess,
     ParryFail,
+    ObjectiveGuardian,
+    ObjectiveWalker,
+    ObjectiveBaseGuardian,
+    ObjectiveShrine,
+    ObjectivePatronWeakened,
+    GameWon,
     DamageTakenIntensity,
 }
 
@@ -404,6 +452,12 @@ impl TriggerKind {
             Self::SoulSecure => "soul secure",
             Self::ParrySuccess => "parry success",
             Self::ParryFail => "got parried",
+            Self::ObjectiveGuardian => "guardian destroyed",
+            Self::ObjectiveWalker => "walker destroyed",
+            Self::ObjectiveBaseGuardian => "base guardian destroyed",
+            Self::ObjectiveShrine => "shrine destroyed",
+            Self::ObjectivePatronWeakened => "patron weakened",
+            Self::GameWon => "game won",
             Self::DamageTakenIntensity => "damage intensity",
         }
     }
@@ -467,6 +521,12 @@ impl TriggerSettingsSet {
             TriggerKind::SoulSecure => &self.soul_secure,
             TriggerKind::ParrySuccess => &self.parry_success,
             TriggerKind::ParryFail => &self.parry_fail,
+            TriggerKind::ObjectiveGuardian => &self.objective_guardian,
+            TriggerKind::ObjectiveWalker => &self.objective_walker,
+            TriggerKind::ObjectiveBaseGuardian => &self.objective_base_guardian,
+            TriggerKind::ObjectiveShrine => &self.objective_shrine,
+            TriggerKind::ObjectivePatronWeakened => &self.objective_patron_weakened,
+            TriggerKind::GameWon => &self.game_won,
             TriggerKind::DamageTakenIntensity => &self.damage_taken_intensity,
         }
     }
@@ -487,6 +547,12 @@ impl TriggerSettingsSet {
             TriggerKind::SoulSecure => &mut self.soul_secure,
             TriggerKind::ParrySuccess => &mut self.parry_success,
             TriggerKind::ParryFail => &mut self.parry_fail,
+            TriggerKind::ObjectiveGuardian => &mut self.objective_guardian,
+            TriggerKind::ObjectiveWalker => &mut self.objective_walker,
+            TriggerKind::ObjectiveBaseGuardian => &mut self.objective_base_guardian,
+            TriggerKind::ObjectiveShrine => &mut self.objective_shrine,
+            TriggerKind::ObjectivePatronWeakened => &mut self.objective_patron_weakened,
+            TriggerKind::GameWon => &mut self.game_won,
             TriggerKind::DamageTakenIntensity => &mut self.damage_taken_intensity,
         }
     }
@@ -523,6 +589,12 @@ impl TriggerSettingsSet {
             | TriggerKind::SoulSecure
             | TriggerKind::ParrySuccess
             | TriggerKind::ParryFail
+            | TriggerKind::ObjectiveGuardian
+            | TriggerKind::ObjectiveWalker
+            | TriggerKind::ObjectiveBaseGuardian
+            | TriggerKind::ObjectiveShrine
+            | TriggerKind::ObjectivePatronWeakened
+            | TriggerKind::GameWon
             | TriggerKind::DamageTakenIntensity
             | TriggerKind::DamageTaken
             | TriggerKind::HealingReceived => None,
@@ -543,6 +615,12 @@ impl TriggerSettingsSet {
             | TriggerKind::SoulSecure
             | TriggerKind::ParrySuccess
             | TriggerKind::ParryFail
+            | TriggerKind::ObjectiveGuardian
+            | TriggerKind::ObjectiveWalker
+            | TriggerKind::ObjectiveBaseGuardian
+            | TriggerKind::ObjectiveShrine
+            | TriggerKind::ObjectivePatronWeakened
+            | TriggerKind::GameWon
             | TriggerKind::DamageTakenIntensity
             | TriggerKind::DamageTaken
             | TriggerKind::HealingReceived => None,
@@ -680,6 +758,12 @@ impl TriggerIdentity {
                 | TriggerKind::SoulSecure
                 | TriggerKind::ParrySuccess
                 | TriggerKind::ParryFail
+                | TriggerKind::ObjectiveGuardian
+                | TriggerKind::ObjectiveWalker
+                | TriggerKind::ObjectiveBaseGuardian
+                | TriggerKind::ObjectiveShrine
+                | TriggerKind::ObjectivePatronWeakened
+                | TriggerKind::GameWon
                 | TriggerKind::DamageTakenIntensity
         ) {
             return format!("{} {}#{}", self.kind.label(), self.session_id, self.sequence);
@@ -2279,6 +2363,12 @@ impl AppState {
                         | BridgeEvent::SoulSecure(count)
                         | BridgeEvent::ParrySuccess(count)
                         | BridgeEvent::ParryFail(count)
+                        | BridgeEvent::ObjectiveGuardian(count)
+                        | BridgeEvent::ObjectiveWalker(count)
+                        | BridgeEvent::ObjectiveBaseGuardian(count)
+                        | BridgeEvent::ObjectiveShrine(count)
+                        | BridgeEvent::ObjectivePatronWeakened(count)
+                        | BridgeEvent::GameWon(count)
                         | BridgeEvent::DamageTakenIntensity(count) => log::info!(
                             target: "companion::app",
                             "bridge_trigger_received trigger={} session_id={:?} sequence={} client_time_ms={} detection={:?}",
@@ -2357,6 +2447,27 @@ impl AppState {
                         }
                         BridgeEvent::ParryFail(count) => {
                             Some(TriggerIdentity::from_count(TriggerKind::ParryFail, count))
+                        }
+                        BridgeEvent::ObjectiveGuardian(count) => Some(TriggerIdentity::from_count(
+                            TriggerKind::ObjectiveGuardian,
+                            count,
+                        )),
+                        BridgeEvent::ObjectiveWalker(count) => Some(TriggerIdentity::from_count(
+                            TriggerKind::ObjectiveWalker,
+                            count,
+                        )),
+                        BridgeEvent::ObjectiveBaseGuardian(count) => Some(
+                            TriggerIdentity::from_count(TriggerKind::ObjectiveBaseGuardian, count),
+                        ),
+                        BridgeEvent::ObjectiveShrine(count) => Some(TriggerIdentity::from_count(
+                            TriggerKind::ObjectiveShrine,
+                            count,
+                        )),
+                        BridgeEvent::ObjectivePatronWeakened(count) => Some(
+                            TriggerIdentity::from_count(TriggerKind::ObjectivePatronWeakened, count),
+                        ),
+                        BridgeEvent::GameWon(count) => {
+                            Some(TriggerIdentity::from_count(TriggerKind::GameWon, count))
                         }
                         // The mod's health-band signal is ignored; intensity is
                         // now computed from the damage-taken amount stream and
@@ -4116,6 +4227,12 @@ fn trigger_display_label(kind: TriggerKind) -> &'static str {
         TriggerKind::SoulSecure => "Soul orb secure",
         TriggerKind::ParrySuccess => "Parry success",
         TriggerKind::ParryFail => "Got parried",
+        TriggerKind::ObjectiveGuardian => "Guardian destroyed",
+        TriggerKind::ObjectiveWalker => "Walker destroyed",
+        TriggerKind::ObjectiveBaseGuardian => "Base Guardian destroyed",
+        TriggerKind::ObjectiveShrine => "Shrine destroyed",
+        TriggerKind::ObjectivePatronWeakened => "Patron weakened",
+        TriggerKind::GameWon => "Game won",
         TriggerKind::DamageTakenIntensity => "Damage intensity",
     }
 }
@@ -4136,6 +4253,12 @@ fn trigger_icon(kind: TriggerKind) -> &'static str {
         TriggerKind::SoulSecure => egui_phosphor::regular::COINS,
         TriggerKind::ParrySuccess => egui_phosphor::regular::SHIELD_CHECK,
         TriggerKind::ParryFail => egui_phosphor::regular::SHIELD_WARNING,
+        TriggerKind::ObjectiveGuardian => egui_phosphor::regular::CASTLE_TURRET,
+        TriggerKind::ObjectiveWalker => egui_phosphor::regular::ROBOT,
+        TriggerKind::ObjectiveBaseGuardian => egui_phosphor::regular::CASTLE_TURRET,
+        TriggerKind::ObjectiveShrine => egui_phosphor::regular::CASTLE_TURRET,
+        TriggerKind::ObjectivePatronWeakened => egui_phosphor::regular::CROWN_SIMPLE,
+        TriggerKind::GameWon => egui_phosphor::regular::TROPHY,
         TriggerKind::DamageTakenIntensity => egui_phosphor::regular::WARNING_OCTAGON,
     }
 }
@@ -4152,6 +4275,12 @@ fn first_copy_source(destination: TriggerKind) -> TriggerKind {
         | TriggerKind::SoulSecure
         | TriggerKind::ParrySuccess
         | TriggerKind::ParryFail
+        | TriggerKind::ObjectiveGuardian
+        | TriggerKind::ObjectiveWalker
+        | TriggerKind::ObjectiveBaseGuardian
+        | TriggerKind::ObjectiveShrine
+        | TriggerKind::ObjectivePatronWeakened
+        | TriggerKind::GameWon
         | TriggerKind::DamageTakenIntensity
         | TriggerKind::AbilityUse
         | TriggerKind::AbilityCooldownReady
@@ -4391,6 +4520,22 @@ fn bridge_event_description(event: &BridgeEvent) -> String {
         BridgeEvent::SoulSecure(count) => format!("soul_secure, {}", count_description(count)),
         BridgeEvent::ParrySuccess(count) => format!("parry_success, {}", count_description(count)),
         BridgeEvent::ParryFail(count) => format!("parry_fail, {}", count_description(count)),
+        BridgeEvent::ObjectiveGuardian(count) => {
+            format!("objective_guardian, {}", count_description(count))
+        }
+        BridgeEvent::ObjectiveWalker(count) => {
+            format!("objective_walker, {}", count_description(count))
+        }
+        BridgeEvent::ObjectiveBaseGuardian(count) => {
+            format!("objective_base_guardian, {}", count_description(count))
+        }
+        BridgeEvent::ObjectiveShrine(count) => {
+            format!("objective_shrine, {}", count_description(count))
+        }
+        BridgeEvent::ObjectivePatronWeakened(count) => {
+            format!("objective_patron_weakened, {}", count_description(count))
+        }
+        BridgeEvent::GameWon(count) => format!("game_won, {}", count_description(count)),
         BridgeEvent::DamageTakenIntensity(count) => {
             format!("damage_taken_intensity, {}", count_description(count))
         }

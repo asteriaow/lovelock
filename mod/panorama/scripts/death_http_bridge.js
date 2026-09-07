@@ -1121,6 +1121,214 @@
     }
 
     // ---------------------------------------------------------------
+    // Objectives: enemy structures destroyed, and winning the match.
+    //
+    // Three surfaces, all read straight from shipped Deadlock styles:
+    //   objectives_map.vcss  -- #ObjectivesMap (already in this mod's top-bar
+    //     layout) holds one stable-id panel per structure:
+    //       #Team{N}Tier1_1..4  Guardians
+    //       #Team{N}Tier2_1..4  Walkers
+    //       #Team{N}Core        Patron / core
+    //     each carries `.Alive` while it stands; a wrapper carries
+    //     `.Team{N}IsEnemy` / `.Team{N}IsFriend`. A per-poll `.Alive` diff on
+    //     the enemy side is map-wide and needs no proximity.
+    //   hud_objective_health.vcss -- the single centre-screen boss bar
+    //     (class "objective_health"), whose class set is the full taxonomy:
+    //       .is_tier1 .is_tier2 .is_barracks_boss .is_shield_generator
+    //       .is_titan .is_weakened .is_dead .friend
+    //     Used for Base Guardian / Shrine / weakened Patron, which have no
+    //     objectives-map id. Best-effort: the bar only shows the objective you
+    //     are near/contesting, so an off-screen kill can be missed.
+    //   hud_match_end.vcss -- CitadelHudMatchEnd gains .ShowMatchEnd plus
+    //     .LocalPlayerTeam{N} and .Team{N}Victory; matching N is a win.
+    // ---------------------------------------------------------------
+    var OBJECTIVE_POLL_INTERVAL_POLLS = 5; // ~0.5s; objectives fall rarely
+    var OBJECTIVE_MAP_ID = "ObjectivesMap";
+    var OBJECTIVE_GUARDIAN_SUFFIXES = ["Tier1_1", "Tier1_2", "Tier1_3", "Tier1_4"];
+    var OBJECTIVE_WALKER_SUFFIXES = ["Tier2_1", "Tier2_2", "Tier2_3", "Tier2_4"];
+    var OBJECTIVE_HEALTH_CLASS = "objective_health";
+
+    var objectivePollCounter = 0;
+    var objectiveAliveState = {};   // full id -> last-seen `.Alive` boolean
+    var objectivesBaselined = false;
+    var gameWonEmitted = false;
+    var objHealthType = null;       // type the boss bar is currently showing
+    var objHealthDeadEmitted = false;
+    var objHealthWeakenedEmitted = false;
+
+    function resetObjectiveState() {
+        objectivePollCounter = 0;
+        objectiveAliveState = {};
+        objectivesBaselined = false;
+        gameWonEmitted = false;
+        objHealthType = null;
+        objHealthDeadEmitted = false;
+        objHealthWeakenedEmitted = false;
+    }
+
+    function panelHasAnyClass(panel, classNames) {
+        for (var i = 0; i < classNames.length; i++) {
+            if (panelHasClass(panel, classNames[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // "1" or "2" for the enemy team, or null while it cannot be told (pre-game,
+    // spectator, class not set yet). The IsEnemy class sits on #ObjectivesMap
+    // or a wrapper a couple of levels above it.
+    function objectiveEnemyTeam(objMap) {
+        for (var d = 0, node = objMap; d <= 3 && isValidPanel(node); d++) {
+            if (panelHasClass(node, "Team1IsEnemy")) { return "1"; }
+            if (panelHasClass(node, "Team2IsEnemy")) { return "2"; }
+            node = panelParent(node);
+        }
+        return null;
+    }
+
+    // Diff one objectives-map panel's `.Alive` against last poll; emit `event`
+    // on the alive->destroyed edge once the baseline pass has run.
+    function diffObjectiveAlive(objMap, fullId, event, detection) {
+        var panel = findChildById(objMap, fullId);
+        if (!isValidPanel(panel)) {
+            return; // absent for this lane count, or not built yet
+        }
+        var alive = panelHasClass(panel, "Alive");
+        var prev = objectiveAliveState[fullId];
+        objectiveAliveState[fullId] = alive;
+        if (objectivesBaselined && prev === true && alive === false) {
+            emitAction(event, { detection: detection });
+        }
+    }
+
+    function objectiveHealthType(w) {
+        if (panelHasClass(w, "is_barracks_boss")) { return "base_guardian"; }
+        if (panelHasClass(w, "is_shield_generator")) { return "shrine"; }
+        if (panelHasClass(w, "is_titan")) { return "titan"; }
+        if (panelHasClass(w, "is_tier1")) { return "guardian"; }
+        if (panelHasClass(w, "is_tier2")) { return "walker"; }
+        return null; // mid boss / neutral / nothing shown
+    }
+
+    function pollObjectiveHealth(root) {
+        var matches = findChildrenWithClass(root, OBJECTIVE_HEALTH_CLASS);
+        var w = matches.length > 0 ? matches[0] : null;
+        if (!isValidPanel(w)) {
+            objHealthType = null;
+            return;
+        }
+        var type = objectiveHealthType(w);
+        if (type !== objHealthType) {
+            objHealthType = type;
+            objHealthDeadEmitted = false;
+            objHealthWeakenedEmitted = false;
+        }
+        if (type === null || anyAncestorHasClass(w, "friend", 3)) {
+            return; // nothing shown, or it is a friendly objective
+        }
+        if (!objHealthWeakenedEmitted && type === "titan"
+            && panelHasClass(w, "is_weakened")) {
+            objHealthWeakenedEmitted = true;
+            emitAction("objective_patron_weakened", {
+                detection: "objective_health:is_titan+is_weakened"
+            });
+        }
+        if (!objHealthDeadEmitted && panelHasClass(w, "is_dead")) {
+            if (type === "base_guardian") {
+                objHealthDeadEmitted = true;
+                emitAction("objective_base_guardian", {
+                    detection: "objective_health:is_barracks_boss+is_dead"
+                });
+            } else if (type === "shrine") {
+                objHealthDeadEmitted = true;
+                emitAction("objective_shrine", {
+                    detection: "objective_health:is_shield_generator+is_dead"
+                });
+            }
+        }
+    }
+
+    function pollMatchEnd(root) {
+        if (gameWonEmitted) {
+            return;
+        }
+        var ends = findChildrenWithClass(root, "ShowMatchEnd");
+        for (var i = 0; i < ends.length; i++) {
+            var p = ends[i];
+            if (!isValidPanel(p) || panelHasClass(p, "MatchAbandoned")) {
+                continue;
+            }
+            var won =
+                (panelHasAnyClass(p, ["LocalPlayerTeam1", "localPlayerTeam1"])
+                    && panelHasClass(p, "Team1Victory"))
+                || (panelHasAnyClass(p, ["LocalPlayerTeam2", "localPlayerTeam2"])
+                    && panelHasClass(p, "Team2Victory"));
+            if (won) {
+                gameWonEmitted = true;
+                emitAction("game_won", { detection: "match_end:local_team_victory" });
+                return;
+            }
+        }
+    }
+
+    function pollObjectives(root) {
+        if (!isValidPanel(root)) {
+            return;
+        }
+        objectivePollCounter++;
+        if (objectivePollCounter < OBJECTIVE_POLL_INTERVAL_POLLS) {
+            return;
+        }
+        objectivePollCounter = 0;
+
+        // One bad panel read here must not take down the poll loop.
+        try {
+            pollMatchEnd(root);
+            pollObjectiveHealth(root);
+
+            var objMap = findCachedChildById(root, OBJECTIVE_MAP_ID);
+            if (!isValidPanel(objMap)) {
+                return;
+            }
+            var enemy = objectiveEnemyTeam(objMap);
+            if (enemy === null) {
+                return; // can't attribute yet; don't baseline a half-built map
+            }
+            var i;
+            for (i = 0; i < OBJECTIVE_GUARDIAN_SUFFIXES.length; i++) {
+                diffObjectiveAlive(
+                    objMap, "Team" + enemy + OBJECTIVE_GUARDIAN_SUFFIXES[i],
+                    "objective_guardian", "objectives_map:tier1_alive_cleared"
+                );
+            }
+            for (i = 0; i < OBJECTIVE_WALKER_SUFFIXES.length; i++) {
+                diffObjectiveAlive(
+                    objMap, "Team" + enemy + OBJECTIVE_WALKER_SUFFIXES[i],
+                    "objective_walker", "objectives_map:tier2_alive_cleared"
+                );
+            }
+            if (!gameWonEmitted) {
+                var coreId = "Team" + enemy + "Core";
+                var core = findChildById(objMap, coreId);
+                if (isValidPanel(core)) {
+                    var coreAlive = panelHasClass(core, "Alive");
+                    var corePrev = objectiveAliveState[coreId];
+                    objectiveAliveState[coreId] = coreAlive;
+                    if (objectivesBaselined && corePrev === true && coreAlive === false) {
+                        gameWonEmitted = true;
+                        emitAction("game_won", {
+                            detection: "objectives_map:enemy_core_alive_cleared"
+                        });
+                    }
+                }
+            }
+            objectivesBaselined = true;
+        } catch (_error) {
+        }
+    }
+
+    // ---------------------------------------------------------------
     // Vitals: health & shields
     //
     // The top bar labels current health and, separately, each shield bar's
@@ -1299,6 +1507,7 @@
         resetVitalsState();
         resetAllySupportState();
         resetCombatState();
+        resetObjectiveState();
         // The top-bar player panel is recreated between matches, so a stale
         // identity from a previous game (possibly a different hero) must not
         // linger and suppress every trigger in the next one.
@@ -1375,6 +1584,9 @@
             pollAbilities(forceAbilityBaseline || isDead || spectating, currentAbilityRoot);
             pollOwnKillStreak(player, rebaselineVitals);
             pollVitals(hudRoot, rebaselineVitals);
+            // Objectives and match end are team/match-level state, valid whether
+            // or not you are on your own hero, so they run outside the gate.
+            pollObjectives(hudRoot);
             if (!spectating) {
                 pollDamageImpactAssists(hudRoot);
                 pollAllySupport(hudRoot);
