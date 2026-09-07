@@ -417,11 +417,6 @@ impl IntensityCurve {
             format_seconds(self.window_seconds)
         )
     }
-
-    /// [`Self::summary_with_noun`] with the original "damage" wording.
-    pub fn summary(&self) -> String {
-        self.summary_with_noun("damage")
-    }
 }
 
 #[cfg(test)]
@@ -571,9 +566,9 @@ mod tests {
 
     #[test]
     fn summary_noun_is_substituted() {
-        let text = IntensityCurve::default().summary_with_noun("healing");
-        assert!(text.contains("healing"), "{text}");
-        assert!(!text.contains("damage"), "{text}");
-        assert!(IntensityCurve::default().summary().contains("damage"));
+        let curve = IntensityCurve::default();
+        assert!(curve.summary_with_noun("healing").contains("healing"));
+        assert!(!curve.summary_with_noun("healing").contains("damage"));
+        assert!(curve.summary_with_noun("damage").contains("damage"));
     }
 }

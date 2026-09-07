@@ -50,27 +50,6 @@ pub struct AbilityTriggerSettings {
     pub ability_filter: AbilityFilter,
 }
 
-/// Lowest amount, accumulated by [`AmountLedger`] within `window_seconds`,
-/// before this trigger fires. Mirrors the shape of [`AbilityTriggerSettings`]
-/// but gates on a rolling sum instead of an ability slot.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AmountTriggerSettings {
-    pub trigger: TriggerSettings,
-    pub threshold: f32,
-    pub window_seconds: f32,
-}
-impl AmountTriggerSettings {
-    fn new(threshold: f32, window_seconds: f32) -> Self {
-        Self {
-            trigger: TriggerSettings {
-                enabled: false,
-                actions: VibrateActionSettings::default(),
-            },
-            threshold,
-            window_seconds,
-        }
-    }
-}
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum AbilityFilter {
     #[default]
@@ -165,16 +144,20 @@ pub struct TriggerSettingsSet {
     pub assist: TriggerSettings,
     pub ability_use: AbilityTriggerSettings,
     pub ability_cooldown_ready: AbilityTriggerSettings,
-    pub damage_taken: AmountTriggerSettings,
-    pub healing_received: AmountTriggerSettings,
+    /// Amount-stream trigger: damage taken, summed over a window and mapped to
+    /// a vibration level by [`Self::damage_taken_curve`].
+    pub damage_taken: TriggerSettings,
+    /// Amount-stream trigger for healing received; see
+    /// [`Self::healing_received_curve`].
+    pub healing_received: TriggerSettings,
     /// Fires once each time the mod sees you heal a teammate (an impact-popup
     /// instance carrying a heal marker). Event based, like [`Self::assist`].
     pub ally_healed: TriggerSettings,
     /// Fires once each time the mod sees you give a teammate a barrier.
     pub ally_shielded: TriggerSettings,
-    /// Rolling-window sum of the damage numbers the game shows for your hits,
-    /// gated by a threshold. Amount based, like [`Self::damage_taken`].
-    pub damage_given: AmountTriggerSettings,
+    /// Amount-stream trigger for the damage numbers the game shows for your
+    /// hits; see [`Self::damage_given_curve`].
+    pub damage_given: TriggerSettings,
     /// Fires when you deny a soul orb (a `deny` combat indicator).
     pub soul_deny: TriggerSettings,
     /// Fires when you secure souls (a `gold` combat indicator).
@@ -304,13 +287,22 @@ impl Default for TriggerSettingsSet {
             ability_cooldown_ready: AbilityTriggerSettings {
                 trigger: TriggerSettings {
                     enabled: false,
-                    actions,
+                    actions: actions.clone(),
                 },
                 ability_filter: AbilityFilter::All,
             },
-            damage_taken: AmountTriggerSettings::new(200.0, 3.0),
-            healing_received: AmountTriggerSettings::new(150.0, 3.0),
-            damage_given: AmountTriggerSettings::new(400.0, 3.0),
+            damage_taken: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            healing_received: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            damage_given: TriggerSettings {
+                enabled: false,
+                actions,
+            },
         }
     }
 }
@@ -525,11 +517,11 @@ impl TriggerSettingsSet {
             TriggerKind::Assist => &self.assist,
             TriggerKind::AbilityUse => &self.ability_use.trigger,
             TriggerKind::AbilityCooldownReady => &self.ability_cooldown_ready.trigger,
-            TriggerKind::DamageTaken => &self.damage_taken.trigger,
-            TriggerKind::HealingReceived => &self.healing_received.trigger,
+            TriggerKind::DamageTaken => &self.damage_taken,
+            TriggerKind::HealingReceived => &self.healing_received,
             TriggerKind::AllyHealed => &self.ally_healed,
             TriggerKind::AllyShielded => &self.ally_shielded,
-            TriggerKind::DamageGiven => &self.damage_given.trigger,
+            TriggerKind::DamageGiven => &self.damage_given,
             TriggerKind::SoulDeny => &self.soul_deny,
             TriggerKind::SoulSecure => &self.soul_secure,
             TriggerKind::ParrySuccess => &self.parry_success,
@@ -551,11 +543,11 @@ impl TriggerSettingsSet {
             TriggerKind::Assist => &mut self.assist,
             TriggerKind::AbilityUse => &mut self.ability_use.trigger,
             TriggerKind::AbilityCooldownReady => &mut self.ability_cooldown_ready.trigger,
-            TriggerKind::DamageTaken => &mut self.damage_taken.trigger,
-            TriggerKind::HealingReceived => &mut self.healing_received.trigger,
+            TriggerKind::DamageTaken => &mut self.damage_taken,
+            TriggerKind::HealingReceived => &mut self.healing_received,
             TriggerKind::AllyHealed => &mut self.ally_healed,
             TriggerKind::AllyShielded => &mut self.ally_shielded,
-            TriggerKind::DamageGiven => &mut self.damage_given.trigger,
+            TriggerKind::DamageGiven => &mut self.damage_given,
             TriggerKind::SoulDeny => &mut self.soul_deny,
             TriggerKind::SoulSecure => &mut self.soul_secure,
             TriggerKind::ParrySuccess => &mut self.parry_success,
@@ -5605,7 +5597,7 @@ mod tests {
     #[test]
     fn amount_intensity_stays_quiet_below_the_curve_then_pulses_at_its_level() {
         let mut state = AppState::default();
-        state.triggers.damage_taken.trigger.enabled = true;
+        state.triggers.damage_taken.enabled = true;
         // Default curve first point is (100 -> level 1).
         state.evaluate_amount_intensity(TriggerKind::DamageTaken, &vitals(80.0, 1));
         assert!(
@@ -5632,8 +5624,8 @@ mod tests {
     #[test]
     fn healing_and_damage_intensity_keep_independent_windows() {
         let mut state = AppState::default();
-        state.triggers.damage_taken.trigger.enabled = true;
-        state.triggers.healing_received.trigger.enabled = true;
+        state.triggers.damage_taken.enabled = true;
+        state.triggers.healing_received.enabled = true;
 
         // A big damage sample pulses Damage Taken but never touches healing's
         // window.
@@ -5656,7 +5648,7 @@ mod tests {
     #[test]
     fn disabled_intensity_trigger_never_pulses() {
         let mut state = AppState::default();
-        state.triggers.damage_given.trigger.enabled = false;
+        state.triggers.damage_given.enabled = false;
         state.evaluate_amount_intensity(TriggerKind::DamageGiven, &vitals(9999.0, 1));
         assert!(state.action_status.is_none());
     }

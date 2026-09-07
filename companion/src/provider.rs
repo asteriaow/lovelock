@@ -129,8 +129,6 @@ impl ProviderError {
             Self::Lovense(LovenseError::CommandRejected { message }) => {
                 format!("Lovense rejected the request: {message}")
             }
-            Self::Lovense(LovenseError::NoToysAvailable) => "No toy connected yet.".to_owned(),
-            Self::Lovense(LovenseError::ToyNotFound) => "That toy isn't connected anymore.".to_owned(),
             Self::Lovense(LovenseError::InvalidStrength) | Self::Lovense(LovenseError::InvalidDuration) => {
                 self.to_string()
             }
