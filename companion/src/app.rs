@@ -203,6 +203,12 @@ pub struct TriggerSettingsSet {
     /// rolling window maps to a vibration level, so a heavier beating drives
     /// the toy harder. Replaces the old fixed strength + threshold.
     pub damage_taken_curve: IntensityCurve,
+    /// Same mechanism as [`Self::damage_taken_curve`] for
+    /// [`TriggerKind::HealingReceived`] - windowed healing maps to a level.
+    pub healing_received_curve: IntensityCurve,
+    /// Same mechanism again for [`TriggerKind::DamageGiven`] - windowed damage
+    /// you deal maps to a level.
+    pub damage_given_curve: IntensityCurve,
     /// Highest-priority trigger kind first; see [`PRIORITY_ORDER_DEFAULT`].
     pub priority_order: Vec<TriggerKind>,
     /// When set, the death effect ignores its configured duration and holds the
@@ -286,6 +292,8 @@ impl Default for TriggerSettingsSet {
                 actions: actions.clone(),
             },
             damage_taken_curve: IntensityCurve::default(),
+            healing_received_curve: IntensityCurve::starter_healing(),
+            damage_given_curve: IntensityCurve::starter_damage_given(),
             ability_use: AbilityTriggerSettings {
                 trigger: TriggerSettings {
                     enabled: false,
@@ -462,17 +470,22 @@ impl TriggerKind {
         }
     }
 
-    /// Whether this trigger gates on an [`AmountLedger`] rolling sum passing a
-    /// threshold (and so gets the threshold editor). `DamageTaken` is excluded:
-    /// it is amount-driven but through the intensity curve, not a threshold.
-    fn is_amount_based(self) -> bool {
-        matches!(self, Self::HealingReceived | Self::DamageGiven)
+    /// Whether this trigger's strength comes from an intensity curve (windowed
+    /// amount -> level) instead of a Fixed/Random vibrate setting.
+    fn is_intensity_curve(self) -> bool {
+        matches!(
+            self,
+            Self::DamageTaken | Self::HealingReceived | Self::DamageGiven
+        )
     }
 
-    /// Whether this trigger's strength comes from the damage-taken intensity
-    /// curve instead of a Fixed/Random vibrate setting.
-    fn is_intensity_curve(self) -> bool {
-        matches!(self, Self::DamageTaken)
+    /// The noun for this curve's windowed amount, for summaries and axis labels.
+    fn intensity_noun(self) -> &'static str {
+        match self {
+            Self::HealingReceived => "healing",
+            Self::DamageGiven => "damage dealt",
+            _ => "damage",
+        }
     }
 }
 
@@ -557,22 +570,22 @@ impl TriggerSettingsSet {
         }
     }
 
-    /// The threshold + rolling-window settings for an amount-based trigger,
-    /// or `None` for a trigger kind that fires per discrete event instead.
-    fn amount_settings(&self, kind: TriggerKind) -> Option<&AmountTriggerSettings> {
+    /// The intensity curve an amount-stream trigger runs, or `None` for a kind
+    /// that fires per discrete event instead.
+    fn amount_curve(&self, kind: TriggerKind) -> Option<&IntensityCurve> {
         match kind {
-            TriggerKind::DamageTaken => Some(&self.damage_taken),
-            TriggerKind::HealingReceived => Some(&self.healing_received),
-            TriggerKind::DamageGiven => Some(&self.damage_given),
+            TriggerKind::DamageTaken => Some(&self.damage_taken_curve),
+            TriggerKind::HealingReceived => Some(&self.healing_received_curve),
+            TriggerKind::DamageGiven => Some(&self.damage_given_curve),
             _ => None,
         }
     }
 
-    fn amount_settings_mut(&mut self, kind: TriggerKind) -> Option<&mut AmountTriggerSettings> {
+    fn amount_curve_mut(&mut self, kind: TriggerKind) -> Option<&mut IntensityCurve> {
         match kind {
-            TriggerKind::DamageTaken => Some(&mut self.damage_taken),
-            TriggerKind::HealingReceived => Some(&mut self.healing_received),
-            TriggerKind::DamageGiven => Some(&mut self.damage_given),
+            TriggerKind::DamageTaken => Some(&mut self.damage_taken_curve),
+            TriggerKind::HealingReceived => Some(&mut self.healing_received_curve),
+            TriggerKind::DamageGiven => Some(&mut self.damage_given_curve),
             _ => None,
         }
     }
@@ -667,12 +680,12 @@ struct TriggerIdentity {
     charges_before: Option<u64>,
     charges_after: Option<u64>,
     /// Total accumulated within the trigger's rolling window, for an
-    /// amount-based trigger kind (see [`TriggerKind::is_amount_based`]).
+    /// intensity-curve trigger kind (see [`TriggerKind::is_intensity_curve`]).
     amount_total: Option<f32>,
     /// When set, [`AppState::queue_trigger_action`] plays exactly this action
     /// instead of resolving the trigger's own settings, and the identity does
-    /// not take part in the monotonic novelty gate. Used by the damage-taken
-    /// intensity curve, whose strength is computed from live damage, not from
+    /// not take part in the monotonic novelty gate. Used by the intensity
+    /// curves, whose strength is computed from the live stream, not from
     /// stored vibrate settings.
     override_action: Option<ResolvedVibrateAction>,
 }
@@ -1045,6 +1058,21 @@ impl AmountLedger {
     }
 }
 
+/// Per-trigger runtime state for an intensity-curve trigger: the rolling
+/// window it sums over and when its last pulse was queued (so a sustained
+/// stream ramps rather than machine-guns the toy).
+#[derive(Default)]
+struct IntensityRuntime {
+    ledger: AmountLedger,
+    last_pulse: Option<Instant>,
+}
+impl IntensityRuntime {
+    fn reset(&mut self) {
+        self.ledger.reset();
+        self.last_pulse = None;
+    }
+}
+
 pub struct AppState {
     pub provider_settings: ProviderSettings,
     pub credential_state: CredentialState,
@@ -1088,15 +1116,12 @@ pub struct AppState {
     last_sequence: Option<(String, u64)>,
     active_action: Option<ActiveAction>,
     ability_catalog: BTreeMap<u32, Option<String>>,
-    damage_ledger: AmountLedger,
-    healing_ledger: AmountLedger,
-    damage_given_ledger: AmountLedger,
-    /// Rolling window of damage taken, fed to the intensity curve. Separate
-    /// from `damage_ledger` because it uses its own (curve-configured) window.
-    damage_intensity_ledger: AmountLedger,
-    /// When the last intensity pulse was queued, so pulses are throttled while
-    /// damage keeps arriving every tick.
-    damage_intensity_last_pulse: Option<Instant>,
+    /// Per-kind rolling window + last-pulse time for the three intensity-curve
+    /// triggers (damage taken, healing received, damage dealt). Each uses its
+    /// own curve-configured window and throttles its own pulse cadence.
+    damage_taken_intensity: IntensityRuntime,
+    healing_intensity: IntensityRuntime,
+    damage_given_intensity: IntensityRuntime,
     listener_action_error: Option<String>,
     selected_section: AppSection,
     selected_effect: TriggerKind,
@@ -1146,11 +1171,9 @@ impl Default for AppState {
             last_sequence: None,
             active_action: None,
             ability_catalog: BTreeMap::new(),
-            damage_ledger: AmountLedger::default(),
-            healing_ledger: AmountLedger::default(),
-            damage_given_ledger: AmountLedger::default(),
-            damage_intensity_ledger: AmountLedger::default(),
-            damage_intensity_last_pulse: None,
+            damage_taken_intensity: IntensityRuntime::default(),
+            healing_intensity: IntensityRuntime::default(),
+            damage_given_intensity: IntensityRuntime::default(),
             listener_action_error: None,
             selected_section: AppSection::default(),
             selected_effect: TriggerKind::Death,
@@ -1209,11 +1232,9 @@ impl AppState {
         self.last_sequence = None;
         self.active_action = None;
         self.ability_catalog.clear();
-        self.damage_ledger.reset();
-        self.healing_ledger.reset();
-        self.damage_given_ledger.reset();
-        self.damage_intensity_ledger.reset();
-        self.damage_intensity_last_pulse = None;
+        self.damage_taken_intensity.reset();
+        self.healing_intensity.reset();
+        self.damage_given_intensity.reset();
         self.listener_action_error = None;
         self.log_detection_status = None;
         self.bridge_listener = ConsoleLogListener::default();
@@ -1254,11 +1275,9 @@ impl AppState {
             self.triggers = profile.triggers;
             self.resting_strength = profile.resting_strength;
         }
-        self.damage_ledger.reset();
-        self.healing_ledger.reset();
-        self.damage_given_ledger.reset();
-        self.damage_intensity_ledger.reset();
-        self.damage_intensity_last_pulse = None;
+        self.damage_taken_intensity.reset();
+        self.healing_intensity.reset();
+        self.damage_given_intensity.reset();
         self.active_action = None;
         self.awaiting_respawn = false;
         self.resting_applied = None;
@@ -1378,10 +1397,9 @@ impl AppState {
             && self.last_sequence.is_none()
             && self.active_action.is_none()
             && self.ability_catalog.is_empty()
-            && self.damage_ledger.samples.is_empty()
-            && self.healing_ledger.samples.is_empty()
-            && self.damage_given_ledger.samples.is_empty()
-            && self.damage_intensity_ledger.samples.is_empty()
+            && self.damage_taken_intensity.ledger.samples.is_empty()
+            && self.healing_intensity.ledger.samples.is_empty()
+            && self.damage_given_intensity.ledger.samples.is_empty()
             && self.action_status.is_none()
             && self.action_in_flight == 0
             && !self.awaiting_respawn
@@ -2127,66 +2145,48 @@ impl AppState {
         self.apply_action_enqueue_result(request, enqueue_result);
     }
 
-    /// Folds one damage/healing report into its trigger's rolling window and
-    /// returns a fireable [`TriggerIdentity`] once the configured threshold
-    /// is cleared. The window is drained on a fire so a single sustained
-    /// fight does not immediately re-trigger on the next tick.
-    fn accumulate_amount_trigger(
-        &mut self,
-        kind: TriggerKind,
-        vitals: VitalsTrigger,
-    ) -> Option<TriggerIdentity> {
-        let settings = self.triggers.amount_settings(kind)?;
-        if !settings.trigger.enabled {
-            return None;
-        }
-        let threshold = settings.threshold;
-        let window_seconds = settings.window_seconds;
-        let ledger = match kind {
-            TriggerKind::DamageTaken => &mut self.damage_ledger,
-            TriggerKind::HealingReceived => &mut self.healing_ledger,
-            TriggerKind::DamageGiven => &mut self.damage_given_ledger,
-            _ => return None,
-        };
-        let total = ledger.record(vitals.amount as f32, window_seconds, Instant::now());
-        if total < threshold {
-            return None;
-        }
-        ledger.reset();
-        Some(TriggerIdentity::from_amount(kind, &vitals, total))
-    }
-
-    /// The minimum gap between intensity pulses while damage keeps landing, so
-    /// a sustained fight ramps rather than machine-guns the toy.
+    /// The minimum gap between intensity pulses while the stream keeps
+    /// landing, so a sustained fight ramps rather than machine-guns the toy.
     const INTENSITY_PULSE_GAP: Duration = Duration::from_millis(450);
 
-    /// The Damage Taken effect: folds one damage report into the rolling
-    /// window and, if the intensity curve puts the windowed total at level 1
-    /// or more, queues a pulse at that level (throttled by
-    /// [`Self::INTENSITY_PULSE_GAP`] so a sustained beating ramps rather than
-    /// machine-guns the toy).
-    fn evaluate_damage_intensity(&mut self, vitals: &VitalsTrigger) {
-        if !self.triggers.damage_taken.trigger.enabled {
+    /// An amount-stream trigger (Damage Taken, Healing Received, Damage Dealt):
+    /// folds one report into that trigger's rolling window and, if its
+    /// intensity curve puts the windowed total at level 1 or more, queues a
+    /// pulse at that level (throttled by [`Self::INTENSITY_PULSE_GAP`] so a
+    /// sustained stream ramps rather than machine-guns the toy).
+    fn evaluate_amount_intensity(&mut self, kind: TriggerKind, vitals: &VitalsTrigger) {
+        if !self.triggers.get(kind).enabled {
             return;
         }
-        let curve = self.triggers.damage_taken_curve.clone();
+        let Some(curve) = self.triggers.amount_curve(kind).cloned() else {
+            return;
+        };
+        let runtime = match kind {
+            TriggerKind::DamageTaken => &mut self.damage_taken_intensity,
+            TriggerKind::HealingReceived => &mut self.healing_intensity,
+            TriggerKind::DamageGiven => &mut self.damage_given_intensity,
+            _ => return,
+        };
         let now = Instant::now();
-        let total = self
-            .damage_intensity_ledger
+        let total = runtime
+            .ledger
             .record(vitals.amount as f32, curve.window_seconds, now);
         let level = curve.level_for(total);
         if level < 1 {
             return;
         }
-        if let Some(last) = self.damage_intensity_last_pulse
+        if let Some(last) = runtime.last_pulse
             && now.duration_since(last) < Self::INTENSITY_PULSE_GAP
         {
             return;
         }
-        self.damage_intensity_last_pulse = Some(now);
+        runtime.last_pulse = Some(now);
         let duration_secs = portable_vibrate_duration(curve.pulse_seconds).unwrap_or(1.0);
-        let mut trigger = TriggerIdentity::from_amount(TriggerKind::DamageTaken, vitals, total);
-        trigger.detection = format!("damage_window:{total:.0} level:{level}");
+        let mut trigger = TriggerIdentity::from_amount(kind, vitals, total);
+        trigger.detection = format!(
+            "{}_window:{total:.0} level:{level}",
+            kind.intensity_noun().replace(' ', "_")
+        );
         trigger.override_action = Some(ResolvedVibrateAction {
             strength: level,
             duration_secs,
@@ -2383,11 +2383,9 @@ impl AppState {
                     let trigger = match event {
                         BridgeEvent::HookReady(_) => {
                             self.ability_catalog.clear();
-                            self.damage_ledger.reset();
-                            self.healing_ledger.reset();
-                            self.damage_given_ledger.reset();
-                            self.damage_intensity_ledger.reset();
-                            self.damage_intensity_last_pulse = None;
+                            self.damage_taken_intensity.reset();
+                            self.healing_intensity.reset();
+                            self.damage_given_intensity.reset();
                             None
                         }
                         BridgeEvent::AbilityCatalog(catalog) => {
@@ -2423,18 +2421,20 @@ impl AppState {
                                 ability,
                             ))
                         }
+                        // The three amount-stream triggers each run their own
+                        // intensity curve: they queue their own pulse and
+                        // return nothing to the generic dispatch below.
                         BridgeEvent::DamageTaken(vitals) => {
-                            // Damage Taken is now the intensity curve; it queues
-                            // its own pulse and returns nothing to the generic
-                            // dispatch below.
-                            self.evaluate_damage_intensity(&vitals);
+                            self.evaluate_amount_intensity(TriggerKind::DamageTaken, &vitals);
                             None
                         }
                         BridgeEvent::HealingReceived(vitals) => {
-                            self.accumulate_amount_trigger(TriggerKind::HealingReceived, vitals)
+                            self.evaluate_amount_intensity(TriggerKind::HealingReceived, &vitals);
+                            None
                         }
                         BridgeEvent::DamageGiven(vitals) => {
-                            self.accumulate_amount_trigger(TriggerKind::DamageGiven, vitals)
+                            self.evaluate_amount_intensity(TriggerKind::DamageGiven, &vitals);
+                            None
                         }
                         BridgeEvent::SoulDeny(count) => {
                             Some(TriggerIdentity::from_count(TriggerKind::SoulDeny, count))
@@ -2471,7 +2471,7 @@ impl AppState {
                         }
                         // The mod's health-band signal is ignored; intensity is
                         // now computed from the damage-taken amount stream and
-                        // its user-set curve (see evaluate_damage_intensity).
+                        // its user-set curve (see evaluate_amount_intensity).
                         BridgeEvent::DamageTakenIntensity(_) => None,
                     };
                     if let Some(trigger) = trigger {
@@ -3104,8 +3104,10 @@ impl AppState {
         let mut drag_to = None;
 
         for (index, kind) in order.iter().copied().enumerate() {
-            let summary = if kind.is_intensity_curve() {
-                self.triggers.damage_taken_curve.summary()
+            let summary = if let Some(curve) =
+                kind.is_intensity_curve().then(|| self.triggers.amount_curve(kind)).flatten()
+            {
+                curve.summary_with_noun(kind.intensity_noun())
             } else {
                 self.triggers.get(kind).actions.summary()
             };
@@ -3324,9 +3326,6 @@ impl AppState {
                     ui.small("Cooldown ready includes a normal cooldown finishing and a charged ability restoring a charge.");
                 }
             }
-            if destination.is_amount_based() {
-                self.draw_amount_threshold(ui, destination, busy);
-            }
             if destination == TriggerKind::Death {
                 ui.add_space(6.0);
                 ui.add_enabled_ui(!busy, |ui| {
@@ -3353,7 +3352,7 @@ impl AppState {
                 ui.separator();
                 ui.add_space(6.0);
                 ui.add_enabled_ui(!busy, |ui| {
-                    self.draw_intensity_curve_editor(ui);
+                    self.draw_intensity_curve_editor(ui, destination);
                 });
             } else {
                 ui.add_space(6.0);
@@ -3402,15 +3401,20 @@ impl AppState {
         self.draw_emergency_stop(ui);
     }
 
-    /// The damage-taken intensity trigger has no fixed strength: it drives the
-    /// toy harder the more damage you are taking, along a curve you draw here.
-    fn draw_intensity_curve_editor(&mut self, ui: &mut Ui) {
-        ui.small(
-            "The more damage you take inside the window, the stronger the pulse. Drag the dots to shape the curve, double-click the graph to add a point, right-click a point to remove it.",
-        );
+    /// An intensity-curve trigger has no fixed strength: it drives the toy
+    /// harder the more of its amount stream lands inside the window, along a
+    /// curve you draw here. Shared by Damage Taken, Healing Received and
+    /// Damage Dealt; `kind` picks which curve and the wording.
+    fn draw_intensity_curve_editor(&mut self, ui: &mut Ui, kind: TriggerKind) {
+        let noun = kind.intensity_noun();
+        ui.small(format!(
+            "The more {noun} inside the window, the stronger the pulse. Drag the dots to shape the curve, double-click the graph to add a point, right-click a point to remove it.",
+        ));
         ui.add_space(8.0);
 
-        let curve = &mut self.triggers.damage_taken_curve;
+        let Some(curve) = self.triggers.amount_curve_mut(kind) else {
+            return;
+        };
         let mut changed = false;
 
         ui.horizontal(|ui| {
@@ -3421,7 +3425,7 @@ impl AppState {
                         .suffix(" s")
                         .fixed_decimals(1),
                 )
-                .on_hover_text("How many seconds of damage taken are summed for the curve.")
+                .on_hover_text(format!("How many seconds of {noun} are summed for the curve."))
                 .changed()
             {
                 changed = true;
@@ -3435,7 +3439,7 @@ impl AppState {
                         .step_by(0.25)
                         .suffix(" s"),
                 )
-                .on_hover_text("How long each buzz lasts. Pulses repeat while damage keeps coming.")
+                .on_hover_text("How long each buzz lasts. Pulses repeat while the stream keeps coming.")
                 .changed()
             {
                 curve.pulse_seconds = crate::action::nearest_duration_step(curve.pulse_seconds);
@@ -3444,10 +3448,10 @@ impl AppState {
         });
         ui.add_space(8.0);
 
-        changed |= draw_curve_graph(ui, curve);
+        changed |= draw_curve_graph(ui, curve, noun);
 
         ui.add_space(4.0);
-        ui.small(egui::RichText::new(curve.summary()).color(crate::theme::TEXT_DIM));
+        ui.small(egui::RichText::new(curve.summary_with_noun(noun)).color(crate::theme::TEXT_DIM));
 
         if changed {
             curve.normalize();
@@ -3514,32 +3518,6 @@ impl AppState {
         }
     }
 
-    /// The threshold + rolling-window controls for an amount-based trigger
-    /// (damage taken, healing received): how much has to add up, and over
-    /// how long a trailing window, before it fires.
-    fn draw_amount_threshold(&mut self, ui: &mut Ui, kind: TriggerKind, busy: bool) {
-        let Some(settings) = self.triggers.amount_settings_mut(kind) else {
-            return;
-        };
-        ui.add_space(6.0);
-        ui.label("Fires when this much accumulates within the window below");
-        ui.add_enabled_ui(!busy, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Threshold");
-                ui.add(egui::DragValue::new(&mut settings.threshold).range(0.0..=100_000.0));
-                ui.weak("health");
-            });
-            ui.horizontal(|ui| {
-                ui.label("Window");
-                ui.add(
-                    egui::DragValue::new(&mut settings.window_seconds)
-                        .range(0.1..=300.0)
-                        .speed(0.1),
-                );
-                ui.weak("seconds");
-            });
-        });
-    }
 
     fn draw_donate(ui: &mut Ui) {
         crate::theme::card(ui).show(ui, |ui| {
@@ -4569,7 +4547,7 @@ fn text_input(ui: &mut Ui, label: &str, value: &mut String, password: bool) -> b
 /// Interactive editor for an [`IntensityCurve`]: an X-axis of damage taken in
 /// the window, a Y-axis of vibration level (0-20), and one draggable dot per
 /// control point. Returns whether the curve changed this frame.
-fn draw_curve_graph(ui: &mut Ui, curve: &mut IntensityCurve) -> bool {
+fn draw_curve_graph(ui: &mut Ui, curve: &mut IntensityCurve, x_noun: &str) -> bool {
     use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Vec2, pos2};
 
     let width = ui.available_width();
@@ -4650,7 +4628,7 @@ fn draw_curve_graph(ui: &mut Ui, curve: &mut IntensityCurve) -> bool {
     painter.text(
         pos2(plot.center().x, rect.bottom() - 2.0),
         Align2::CENTER_BOTTOM,
-        "damage taken in window",
+        format!("{x_noun} in window"),
         label_font.clone(),
         crate::theme::TEXT_DIM,
     );
@@ -5625,42 +5603,62 @@ mod tests {
     }
 
     #[test]
-    fn amount_trigger_stays_quiet_below_threshold_and_fires_once_it_clears() {
+    fn amount_intensity_stays_quiet_below_the_curve_then_pulses_at_its_level() {
         let mut state = AppState::default();
         state.triggers.damage_taken.trigger.enabled = true;
-        state.triggers.damage_taken.threshold = 200.0;
-        state.triggers.damage_taken.window_seconds = 3.0;
-
+        // Default curve first point is (100 -> level 1).
+        state.evaluate_amount_intensity(TriggerKind::DamageTaken, &vitals(80.0, 1));
         assert!(
-            state
-                .accumulate_amount_trigger(TriggerKind::DamageTaken, vitals(120.0, 1))
-                .is_none()
+            state.action_status.is_none(),
+            "80 in the window is below the curve's first point"
         );
-        let fired = state
-            .accumulate_amount_trigger(TriggerKind::DamageTaken, vitals(90.0, 2))
-            .expect("threshold cleared over two samples");
-        assert_eq!(fired.kind, TriggerKind::DamageTaken);
-        assert_eq!(fired.amount_total, Some(210.0));
 
-        // The window was drained on firing, so a small follow-up sample does
-        // not immediately re-trigger.
+        state.evaluate_amount_intensity(TriggerKind::DamageTaken, &vitals(60.0, 2));
+        let status = state
+            .action_status
+            .clone()
+            .expect("140 summed over the window clears level 1");
+        let action = status
+            .snapshot()
+            .resolved
+            .expect("an intensity pulse overrides the resolved action");
+        assert_eq!(
+            action.strength,
+            state.triggers.damage_taken_curve.level_for(140.0)
+        );
+        assert_eq!(action.duration_secs, 1.0);
+    }
+
+    #[test]
+    fn healing_and_damage_intensity_keep_independent_windows() {
+        let mut state = AppState::default();
+        state.triggers.damage_taken.trigger.enabled = true;
+        state.triggers.healing_received.trigger.enabled = true;
+
+        // A big damage sample pulses Damage Taken but never touches healing's
+        // window.
+        state.evaluate_amount_intensity(TriggerKind::DamageTaken, &vitals(900.0, 1));
+        assert!(state.action_status.is_some(), "damage taken pulsed");
+        state.action_status = None;
+
+        // Healing curve's first point is (150 -> 1), so 120 stays quiet and a
+        // second sample clearing 150 pulses - on healing's own ledger, not the
+        // damage one that already fired.
+        state.evaluate_amount_intensity(TriggerKind::HealingReceived, &vitals(120.0, 2));
+        assert!(state.action_status.is_none(), "120 healing is below the curve");
+        state.evaluate_amount_intensity(TriggerKind::HealingReceived, &vitals(60.0, 3));
         assert!(
-            state
-                .accumulate_amount_trigger(TriggerKind::DamageTaken, vitals(10.0, 3))
-                .is_none()
+            state.action_status.is_some(),
+            "180 healing summed on healing's own window clears level 1"
         );
     }
 
     #[test]
-    fn disabled_amount_trigger_never_accumulates() {
+    fn disabled_intensity_trigger_never_pulses() {
         let mut state = AppState::default();
-        state.triggers.healing_received.trigger.enabled = false;
-        state.triggers.healing_received.threshold = 50.0;
-        assert!(
-            state
-                .accumulate_amount_trigger(TriggerKind::HealingReceived, vitals(999.0, 1))
-                .is_none()
-        );
+        state.triggers.damage_given.trigger.enabled = false;
+        state.evaluate_amount_intensity(TriggerKind::DamageGiven, &vitals(9999.0, 1));
+        assert!(state.action_status.is_none());
     }
 
     #[test]

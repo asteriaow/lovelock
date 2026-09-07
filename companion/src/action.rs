@@ -268,26 +268,30 @@ pub fn portable_vibrate_duration(value: f32) -> Option<f32> {
     ((nearest - value).abs() < 0.01).then_some(nearest)
 }
 
-/// The widest window the damage-intensity curve will sum damage over.
+/// The widest window an intensity curve will sum its amount stream over.
 pub const MAX_INTENSITY_WINDOW_SECS: f32 = 20.0;
-/// The largest windowed-damage figure the curve editor plots and clamps to.
-pub const MAX_INTENSITY_DAMAGE: f32 = 3000.0;
+/// The largest windowed-amount figure the curve editor plots and clamps to.
+/// Sized for the biggest stream (damage dealt); the graph auto-scales its
+/// x-axis to the curve's own points within this cap.
+pub const MAX_INTENSITY_DAMAGE: f32 = 6000.0;
 
-/// One control point on the damage-intensity curve: `damage` taken within the
-/// window maps to vibration `level`.
+/// One control point on an intensity curve: `damage` (an amount summed within
+/// the window - damage taken, healing received, or damage dealt) maps to
+/// vibration `level`. The field keeps the name `damage` for its history.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IntensityPoint {
     pub damage: f32,
     pub level: f32,
 }
 
-/// Maps "damage taken within a rolling window" to a vibration level, as a
-/// piecewise-linear curve through user-set control points. Below the first
-/// point the level is 0 (no effect); at or above the last point it holds at
-/// that point's level. Used only by the damage-taken-intensity trigger.
+/// Maps "an amount stream summed over a rolling window" to a vibration level,
+/// as a piecewise curve through user-set control points. Below the first point
+/// the level is 0 (no effect); at or above the last point it holds at that
+/// point's level. Drives the Damage Taken, Healing Received and Damage Dealt
+/// triggers, each with its own curve.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IntensityCurve {
-    /// Seconds of damage taken that are summed into the value fed to the curve.
+    /// Seconds of the amount stream that are summed into the value fed to the curve.
     pub window_seconds: f32,
     /// How long each intensity pulse runs on the toy.
     pub pulse_seconds: f32,
@@ -297,24 +301,36 @@ pub struct IntensityCurve {
 
 impl Default for IntensityCurve {
     fn default() -> Self {
+        Self::from_points(3.0, 1.0, [(100.0, 1.0), (500.0, 10.0), (1200.0, 20.0)])
+    }
+}
+
+impl IntensityCurve {
+    fn from_points<const N: usize>(
+        window_seconds: f32,
+        pulse_seconds: f32,
+        points: [(f32, f32); N],
+    ) -> Self {
         Self {
-            window_seconds: 3.0,
-            pulse_seconds: 1.0,
-            points: vec![
-                IntensityPoint {
-                    damage: 100.0,
-                    level: 1.0,
-                },
-                IntensityPoint {
-                    damage: 500.0,
-                    level: 10.0,
-                },
-                IntensityPoint {
-                    damage: 1200.0,
-                    level: 20.0,
-                },
-            ],
+            window_seconds,
+            pulse_seconds,
+            points: points
+                .into_iter()
+                .map(|(damage, level)| IntensityPoint { damage, level })
+                .collect(),
         }
+    }
+
+    /// Starting curve for Healing Received: healing arrives in smaller chunks
+    /// than a beating, so it ramps sooner and tops out lower.
+    pub fn starter_healing() -> Self {
+        Self::from_points(3.0, 1.0, [(150.0, 1.0), (500.0, 8.0), (1200.0, 18.0)])
+    }
+
+    /// Starting curve for Damage Dealt: your own output over a few seconds is
+    /// far larger than what you take, so the points sit much higher.
+    pub fn starter_damage_given() -> Self {
+        Self::from_points(3.0, 1.0, [(400.0, 1.0), (1800.0, 10.0), (4000.0, 20.0)])
     }
 }
 
@@ -387,18 +403,24 @@ impl IntensityCurve {
             .clamp(0.0, MAX_VIBRATE_STRENGTH) as u8
     }
 
-    /// Compact one-line description for the trigger list.
-    pub fn summary(&self) -> String {
+    /// Compact one-line description for the trigger list. `noun` names what the
+    /// windowed amount is - "damage", "healing", "damage dealt".
+    pub fn summary_with_noun(&self, noun: &str) -> String {
         let last = self.points.last().copied().unwrap_or(IntensityPoint {
             damage: 0.0,
             level: 0.0,
         });
         format!(
-            "Up to level {:.0} at {:.0} damage in {}",
+            "Up to level {:.0} at {:.0} {noun} in {}",
             last.level,
             last.damage,
             format_seconds(self.window_seconds)
         )
+    }
+
+    /// [`Self::summary_with_noun`] with the original "damage" wording.
+    pub fn summary(&self) -> String {
+        self.summary_with_noun("damage")
     }
 }
 
@@ -525,5 +547,33 @@ mod tests {
         assert_eq!(curve.points[0].damage, 0.0);
         assert_eq!(curve.points[1].level, MAX_VIBRATE_STRENGTH);
         assert!(duration_steps().contains(&curve.pulse_seconds));
+    }
+
+    #[test]
+    fn starter_curves_are_valid_and_scaled_for_their_stream() {
+        for curve in [
+            IntensityCurve::starter_healing(),
+            IntensityCurve::starter_damage_given(),
+        ] {
+            let mut normalized = curve.clone();
+            normalized.normalize();
+            assert_eq!(normalized, curve, "starter curves are already normalized");
+            assert!(curve.points.len() >= 2);
+            assert!(curve.points.windows(2).all(|w| w[0].damage < w[1].damage));
+        }
+        // Damage dealt is a far bigger stream, so its top point sits well
+        // above the healing one and within the plot cap.
+        let dealt_top = IntensityCurve::starter_damage_given().points.last().unwrap().damage;
+        let heal_top = IntensityCurve::starter_healing().points.last().unwrap().damage;
+        assert!(dealt_top > heal_top);
+        assert!(dealt_top <= MAX_INTENSITY_DAMAGE);
+    }
+
+    #[test]
+    fn summary_noun_is_substituted() {
+        let text = IntensityCurve::default().summary_with_noun("healing");
+        assert!(text.contains("healing"), "{text}");
+        assert!(!text.contains("damage"), "{text}");
+        assert!(IntensityCurve::default().summary().contains("damage"));
     }
 }
