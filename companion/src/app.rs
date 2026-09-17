@@ -87,11 +87,14 @@ const NOTICE_PINK: [f32; 4] = [1.0, 0.765, 0.878, 1.0];
 /// so retiring a trigger only means deleting its line below (the enum variant,
 /// its settings field and its persistence stay for backward compatibility).
 /// `SoulSecure` stays retired: the HUD shows one flat gold number for every
-/// soul gain, so "you shot the orb" is not detectable. `SoulDeny` is live
-/// again -- the HUD has a dedicated `deny` combat indicator for a denied soul.
+/// soul gain, so "you shot the orb" is not detectable.
 /// `DamageTakenIntensity` was folded into `DamageTaken`, which now runs the
 /// intensity curve itself.
-pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 19] = [
+/// `AllyShielded`, `SoulDeny`, `ParrySuccess` and `ParryFail` are temporarily
+/// pulled from this build (enum variants, settings fields and persistence
+/// stay, per the retirement pattern above) -- re-add their lines to bring
+/// them back.
+pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 15] = [
     TriggerKind::Death,
     TriggerKind::Kill,
     TriggerKind::Assist,
@@ -100,11 +103,7 @@ pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 19] = [
     TriggerKind::DamageTaken,
     TriggerKind::HealingReceived,
     TriggerKind::AllyHealed,
-    TriggerKind::AllyShielded,
     TriggerKind::DamageGiven,
-    TriggerKind::SoulDeny,
-    TriggerKind::ParrySuccess,
-    TriggerKind::ParryFail,
     TriggerKind::ObjectiveGuardian,
     TriggerKind::ObjectiveWalker,
     TriggerKind::ObjectiveBaseGuardian,
@@ -655,6 +654,15 @@ impl AppSection {
             Self::Donate => "Donate",
         }
     }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Setup => egui_phosphor::regular::VIBRATE,
+            Self::Effects => egui_phosphor::regular::SPARKLE,
+            Self::GameConnection => egui_phosphor::regular::PLUGS_CONNECTED,
+            Self::Donate => egui_phosphor::regular::HEART,
+        }
+    }
 }
 
 const KOFI_URL: &str = "https://ko-fi.com/asteriaxo";
@@ -1116,6 +1124,8 @@ pub struct AppState {
     damage_given_intensity: IntensityRuntime,
     listener_action_error: Option<String>,
     selected_section: AppSection,
+    /// UI-only: whether the left nav sidebar is collapsed to its icon rail.
+    sidebar_collapsed: bool,
     selected_effect: TriggerKind,
     copy_source: TriggerKind,
     copy_feedback: Option<String>,
@@ -1168,6 +1178,7 @@ impl Default for AppState {
             damage_given_intensity: IntensityRuntime::default(),
             listener_action_error: None,
             selected_section: AppSection::default(),
+            sidebar_collapsed: false,
             selected_effect: TriggerKind::Death,
             copy_source: TriggerKind::AbilityUse,
             copy_feedback: None,
@@ -2595,7 +2606,32 @@ impl AppState {
         }
     }
 
+    /// Full standalone render: the nav sidebar plus the selected tab's
+    /// content. [`CompanionApp::draw`] instead calls [`Self::draw_nav_sidebar`]
+    /// and [`Self::draw_content`] separately, so it can slot its own
+    /// maintenance footer (version info, logs, reset, …) into the sidebar
+    /// between them. Kept as a single entry point for tests that render
+    /// `AppState` on its own.
     pub fn draw(&mut self, ui: &mut Ui) {
+        let sidebar_width = if self.sidebar_collapsed { 56.0 } else { 188.0 };
+        egui::Panel::left("app_nav_sidebar")
+            .resizable(false)
+            .exact_size(sidebar_width)
+            .frame(
+                egui::Frame::NONE
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(10, 16)),
+            )
+            .show(ui, |ui| {
+                self.draw_nav_sidebar(ui);
+            });
+        self.draw_content(ui);
+    }
+
+    /// Draws the selected tab's content (everything to the right of the nav
+    /// sidebar), plus the polling and repaint bookkeeping that used to run at
+    /// the top of [`Self::draw`].
+    fn draw_content(&mut self, ui: &mut Ui) {
         self.poll_test_action();
         self.poll_connection_test();
         self.poll_device_refresh();
@@ -2605,74 +2641,36 @@ impl AppState {
         self.maintain_resting();
         let busy = self.is_busy();
 
-        ui.vertical_centered(|ui| {
-        ui.horizontal(|ui| {
-            for section in [
-                AppSection::Setup,
-                AppSection::Effects,
-                AppSection::GameConnection,
-                AppSection::Donate,
-            ] {
-                let selected = self.selected_section == section;
-                ui.vertical(|ui| {
-                    let wing_top = ui.cursor().top();
-                    ui.add_space(8.0);
-                    let button = egui::Button::new(crate::theme::heading_text(section.label(), 16.0))
-                        .fill(if selected {
-                            crate::theme::ACCENT_DIM
-                        } else {
-                            egui::Color32::TRANSPARENT
-                        })
-                        .stroke(if selected {
-                            egui::Stroke::new(1.0, crate::theme::ACCENT)
-                        } else {
-                            egui::Stroke::NONE
-                        });
-                    let response = ui.add(button);
-                    if selected {
-                        let center_x = response.rect.center().x;
-                        ui.painter().add(egui::Shape::convex_polygon(
-                            vec![
-                                egui::pos2(center_x, wing_top),
-                                egui::pos2(center_x - 7.0, wing_top + 8.0),
-                                egui::pos2(center_x + 7.0, wing_top + 8.0),
-                            ],
-                            crate::theme::ACCENT,
-                            egui::Stroke::NONE,
-                        ));
-                    }
-                    if response.clicked() {
-                        self.selected_section = section;
-                    }
-                });
-                ui.add_space(6.0);
-            }
-        });
-        });
-        ui.add_space(10.0);
-
-        // The Effects tab lays out its own scroll regions (the trigger list and
-        // the editor each scroll independently); every other tab is a single
-        // scrolling column. Both are held to a comfortable centered measure so
-        // nothing sprawls edge to edge on a wide window.
-        if self.selected_section == AppSection::Effects {
-            Self::centered_body(ui, EFFECTS_CONTENT_MAX_WIDTH, |ui| {
-                self.draw_effects(ui, busy);
-            });
-        } else {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    Self::centered_body(ui, COLUMN_CONTENT_MAX_WIDTH, |ui| {
-                        match self.selected_section {
-                            AppSection::Setup => self.draw_setup(ui, busy),
-                            AppSection::GameConnection => self.draw_game_connection(ui),
-                            AppSection::Donate => Self::draw_donate(ui),
-                            AppSection::Effects => {}
-                        }
+        // A little breathing room between the sidebar and the content column,
+        // so cards never sit flush against the nav's separator line. The
+        // right margin matches it, so the scrollbar sits exactly as far from
+        // the cards as the cards sit from the sidebar.
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(20, 0))
+            .show(ui, |ui| {
+                // The Effects tab lays out its own scroll regions (the trigger list
+                // and the editor each scroll independently); every other tab is a
+                // single scrolling column. Both are held to a comfortable centered
+                // measure so nothing sprawls edge to edge on a wide window.
+                if self.selected_section == AppSection::Effects {
+                    Self::centered_body(ui, EFFECTS_CONTENT_MAX_WIDTH, |ui| {
+                        self.draw_effects(ui, busy);
                     });
-                });
-        }
+                } else {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            Self::centered_body(ui, COLUMN_CONTENT_MAX_WIDTH, |ui| {
+                                match self.selected_section {
+                                    AppSection::Setup => self.draw_setup(ui, busy),
+                                    AppSection::GameConnection => self.draw_game_connection(ui),
+                                    AppSection::Donate => Self::draw_donate(ui),
+                                    AppSection::Effects => {}
+                                }
+                            });
+                        });
+                }
+            });
 
         let listener_status = self.bridge_listener.status();
         let resting_desired = self.resting_strength.min(20);
@@ -2684,6 +2682,113 @@ impl AppState {
             || resting_pending
         {
             ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
+    /// Draws the left-hand navigation column: one full-width row per
+    /// [`AppSection`], each with a leading icon, its label, and a soft accent
+    /// bar down the left edge when selected. Replaces the old top wing-tab
+    /// bar with a sidebar, keeping the same sections and selection state.
+    /// A toggle at the top collapses it down to an icon-only rail (labels
+    /// then show as hover tooltips instead).
+    fn draw_nav_sidebar(&mut self, ui: &mut Ui) {
+        let collapsed = self.sidebar_collapsed;
+
+        let toggle_size = egui::vec2(ui.available_width(), 32.0);
+        let (toggle_rect, toggle_response) =
+            ui.allocate_exact_size(toggle_size, egui::Sense::click());
+        if toggle_response.clicked() {
+            self.sidebar_collapsed = !self.sidebar_collapsed;
+        }
+        let toggle_color = if toggle_response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            crate::theme::ACCENT_BRIGHT
+        } else {
+            crate::theme::TEXT_DIM
+        };
+        // The toggle glyph always sits at the row's right edge, flipping
+        // direction to show what clicking it will do next.
+        let toggle_pos = toggle_rect.right_center() - egui::vec2(14.0, 0.0);
+        ui.painter().text(
+            toggle_pos,
+            egui::Align2::CENTER_CENTER,
+            if collapsed {
+                egui_phosphor::regular::ARROW_LINE_RIGHT
+            } else {
+                egui_phosphor::regular::ARROW_LINE_LEFT
+            },
+            egui::FontId::proportional(18.0),
+            toggle_color,
+        );
+        toggle_response.on_hover_text(if collapsed { "Expand sidebar" } else { "Collapse sidebar" });
+
+        ui.add_space(10.0);
+
+        for section in [
+            AppSection::Setup,
+            AppSection::Effects,
+            AppSection::GameConnection,
+            AppSection::Donate,
+        ] {
+            let selected = self.selected_section == section;
+            let row_height = 40.0;
+            let desired = egui::vec2(ui.available_width(), row_height);
+            let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+
+            if response.clicked() {
+                self.selected_section = section;
+            }
+
+            if selected {
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::ZERO, crate::theme::ACCENT_DIM);
+                let bar_width = 3.0;
+                let bar = egui::Rect::from_min_size(
+                    rect.left_top(),
+                    egui::vec2(bar_width, rect.height()),
+                );
+                ui.painter()
+                    .rect_filled(bar, egui::CornerRadius::ZERO, crate::theme::ACCENT);
+            } else if response.hovered() {
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::ZERO, crate::theme::CARD_RAISED);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
+            let text_color = if selected {
+                crate::theme::ACCENT_BRIGHT
+            } else {
+                crate::theme::TEXT
+            };
+            if collapsed {
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    section.icon(),
+                    egui::FontId::proportional(18.0),
+                    text_color,
+                );
+                response.on_hover_text(section.label());
+            } else {
+                let icon_pos = rect.left_center() + egui::vec2(14.0, 0.0);
+                ui.painter().text(
+                    icon_pos,
+                    egui::Align2::LEFT_CENTER,
+                    section.icon(),
+                    egui::FontId::proportional(18.0),
+                    text_color,
+                );
+                let label_galley = ui.painter().layout_no_wrap(
+                    section.label().to_owned(),
+                    egui::FontId::new(15.0, crate::theme::heading_family()),
+                    text_color,
+                );
+                let label_pos =
+                    rect.left_center() + egui::vec2(40.0, -label_galley.size().y / 2.0);
+                ui.painter().galley(label_pos, label_galley, text_color);
+            }
+
+            ui.add_space(14.0);
         }
     }
 
@@ -2904,19 +3009,47 @@ impl AppState {
         // The profile card stays put; the trigger list and the editor each get
         // their own vertical scroll so a long list of triggers never pushes the
         // whole page.
-        ui.columns(2, |columns| {
-            egui::ScrollArea::vertical()
-                .id_salt("effects-trigger-list-scroll")
-                .auto_shrink([false, false])
-                .show(&mut columns[0], |ui| {
-                    self.draw_trigger_list(ui, busy);
-                });
-            egui::ScrollArea::vertical()
-                .id_salt("effects-editor-scroll")
-                .auto_shrink([false, false])
-                .show(&mut columns[1], |ui| {
-                    self.draw_effect_editor(ui, busy);
-                });
+        let available = ui.available_size();
+        // The gap between the list and the editor scales with the window's
+        // width, so a wide window puts the extra room into breathing space
+        // between the two panes rather than just stretching them wider.
+        let gap = (available.x * 0.035).clamp(16.0, 48.0);
+        let column_width = (available.x - gap) / 2.0;
+
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(column_width, available.y),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(column_width);
+                    egui::ScrollArea::vertical()
+                        .id_salt("effects-trigger-list-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.draw_trigger_list(ui, busy);
+                        });
+                },
+            );
+
+            ui.add_space(gap);
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(column_width, available.y),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(column_width);
+                    // A small upward nudge so the editor's heading lines up
+                    // with the trigger list's, instead of sitting a touch
+                    // lower than it.
+                    ui.add_space(-6.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("effects-editor-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.draw_effect_editor(ui, busy);
+                        });
+                },
+            );
         });
     }
 
@@ -2939,12 +3072,6 @@ impl AppState {
 
         crate::theme::card(ui).show(ui, |ui| {
             ui.horizontal(|ui| {
-                crate::theme::colored_text_nudged_down(
-                    ui,
-                    egui_phosphor::regular::HEART,
-                    crate::theme::ACCENT,
-                    4.0,
-                );
                 ui.label(crate::theme::heading_text("Profiles", 19.0));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3032,7 +3159,7 @@ impl AppState {
                     )
                     .fill(fill)
                     .stroke(stroke)
-                    .corner_radius(egui::CornerRadius::same(255))
+                    .corner_radius(egui::CornerRadius::ZERO)
                     .min_size(egui::vec2(0.0, 30.0));
                     let response = ui.add(chip);
                     if response.clicked() {
@@ -3259,10 +3386,13 @@ impl AppState {
                 ui.add_space(4.0);
                 ui.add_enabled_ui(!busy, |ui| {
                     let mut level = i32::from(self.resting_strength);
-                    if ui
-                        .add(egui::Slider::new(&mut level, 0..=20).text("strength"))
-                        .changed()
-                    {
+                    let mut changed = false;
+                    crate::theme::rounded_sliders(ui, |ui| {
+                        changed = ui
+                            .add(egui::Slider::new(&mut level, 0..=20).text("strength"))
+                            .changed();
+                    });
+                    if changed {
                         self.resting_strength = level.clamp(0, 20) as u8;
                     }
                 });
@@ -3411,32 +3541,38 @@ impl AppState {
 
         ui.horizontal(|ui| {
             ui.label("Window");
-            if ui
-                .add(
-                    egui::Slider::new(&mut curve.window_seconds, 0.5..=MAX_INTENSITY_WINDOW_SECS)
-                        .suffix(" s")
-                        .fixed_decimals(1),
-                )
-                .on_hover_text(format!("How many seconds of {noun} are summed for the curve."))
-                .changed()
-            {
-                changed = true;
-            }
+            crate::theme::rounded_sliders(ui, |ui| {
+                if ui
+                    .add(
+                        egui::Slider::new(&mut curve.window_seconds, 0.5..=MAX_INTENSITY_WINDOW_SECS)
+                            .suffix(" s")
+                            .fixed_decimals(1),
+                    )
+                    .on_hover_text(format!("How many seconds of {noun} are summed for the curve."))
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
         });
         ui.horizontal(|ui| {
             ui.label("Pulse length");
-            if ui
-                .add(
-                    egui::Slider::new(&mut curve.pulse_seconds, 0.25..=5.0)
-                        .step_by(0.25)
-                        .suffix(" s"),
-                )
-                .on_hover_text("How long each buzz lasts. Pulses repeat while the stream keeps coming.")
-                .changed()
-            {
-                curve.pulse_seconds = crate::action::nearest_duration_step(curve.pulse_seconds);
-                changed = true;
-            }
+            crate::theme::rounded_sliders(ui, |ui| {
+                if ui
+                    .add(
+                        egui::Slider::new(&mut curve.pulse_seconds, 0.25..=5.0)
+                            .step_by(0.25)
+                            .suffix(" s"),
+                    )
+                    .on_hover_text(
+                        "How long each buzz lasts. Pulses repeat while the stream keeps coming.",
+                    )
+                    .changed()
+                {
+                    curve.pulse_seconds = crate::action::nearest_duration_step(curve.pulse_seconds);
+                    changed = true;
+                }
+            });
         });
         ui.add_space(8.0);
 
@@ -3756,7 +3892,12 @@ impl CompanionApp {
             || listener_silent
         {
             egui::Panel::top("notices")
-                .frame(egui::Frame::NONE.fill(crate::theme::BASE).inner_margin(8.0))
+                .frame(egui::Frame::NONE.fill(crate::theme::BASE).inner_margin(
+                    egui::Margin {
+                        left: 24,
+                        ..egui::Margin::same(8)
+                    },
+                ))
                 .show(ui, |ui| {
                     if let Some(warning) = self.persistence.load_warning() {
                         status_line(ui, warning, NOTICE_PINK);
@@ -3786,9 +3927,24 @@ impl CompanionApp {
             )
             .show(ui, |ui| {
                 crate::theme::paint_dotted_background(ui);
+                let sidebar_width = if self.state.sidebar_collapsed { 56.0 } else { 188.0 };
+                egui::Panel::left("app_nav_sidebar")
+                    .resizable(false)
+                    .exact_size(sidebar_width)
+                    .frame(
+                        egui::Frame::NONE
+                            .fill(crate::theme::PANEL)
+                            .inner_margin(egui::Margin::symmetric(10, 16)),
+                    )
+                    .show(ui, |ui| {
+                        self.state.draw_nav_sidebar(ui);
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                            self.draw_sidebar_footer(ui);
+                        });
+                    });
                 // No page-wide scroll: each section (and, on the Effects tab,
                 // the trigger list and the editor separately) scrolls itself.
-                self.state.draw(ui);
+                self.state.draw_content(ui);
             });
         let ctx = ui.ctx().clone();
         self.draw_reset_confirmation(&ctx);
@@ -3860,10 +4016,8 @@ impl CompanionApp {
                         ));
                     }
 
-                    // The wordmark sits centered in the whole bar; the window
-                    // controls float over its right end. A small guard keeps
-                    // them from colliding on a very narrow window by falling
-                    // back to a left-aligned wordmark.
+                    // The wordmark sits pinned to the bar's left end; the
+                    // window controls float over its right end.
                     let title = "Lovelock Companion";
                     let title_font = egui::FontId::new(20.0, crate::theme::heading_family());
                     let title_w = ui
@@ -3874,18 +4028,10 @@ impl CompanionApp {
                     let logo_size = 28.0;
                     let gap = 8.0;
                     let group_w = logo_size + gap + title_w;
-                    let centered = bar_rect.width() > group_w + 320.0;
-                    let group_rect = if centered {
-                        egui::Rect::from_center_size(
-                            bar_rect.center(),
-                            egui::vec2(group_w, bar_rect.height()),
-                        )
-                    } else {
-                        egui::Rect::from_min_size(
-                            bar_rect.left_center() - egui::vec2(0.0, bar_rect.height() / 2.0),
-                            egui::vec2(group_w, bar_rect.height()),
-                        )
-                    };
+                    let group_rect = egui::Rect::from_min_size(
+                        bar_rect.left_center() - egui::vec2(0.0, bar_rect.height() / 2.0),
+                        egui::vec2(group_w, bar_rect.height()),
+                    );
                     let logo_texture = self.logo_texture.clone();
                     ui.scope_builder(
                         egui::UiBuilder::new().max_rect(group_rect).layout(
@@ -3924,22 +4070,6 @@ impl CompanionApp {
                         {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
-                        ui.add_space(10.0);
-                        let gear_response = ui.add(
-                            egui::Button::new(egui_phosphor::regular::GEAR)
-                                .corner_radius(egui::CornerRadius::same(255))
-                                .stroke(egui::Stroke::new(1.0, crate::theme::STROKE)),
-                        );
-                        egui::Popup::menu(&gear_response).show(|ui| {
-                            ui.set_min_width(220.0);
-                            self.draw_menu_contents(ui);
-                        });
-                        ui.add_space(10.0);
-                        crate::theme::badge(
-                            ui,
-                            &format!("v{}", app_version()),
-                            crate::theme::BadgeTone::Success,
-                        );
                     });
                 });
             });
@@ -3958,23 +4088,33 @@ impl CompanionApp {
         ctx.request_repaint_after(Duration::from_millis(250));
 
         let mut open = self.logs_window_open;
-        egui::Window::new("Logs").open(&mut open).show(ctx, |ui| {
-            if ui.button("Copy all").clicked() {
-                ctx.copy_text(self.logs_cached_text.clone());
-            }
-            if self.logs_cached_text.is_empty() {
-                ui.label("No log records have been captured yet.");
-                return;
-            }
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&self.logs_cached_text).monospace())
+        themed_window(
+            ctx,
+            "Logs",
+            "Logs",
+            egui_phosphor::regular::FILE_TEXT,
+            &mut open,
+            true,
+            |ui| {
+                if ui.button("Copy all").clicked() {
+                    ctx.copy_text(self.logs_cached_text.clone());
+                }
+                if self.logs_cached_text.is_empty() {
+                    ui.label("No log records have been captured yet.");
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&self.logs_cached_text).monospace(),
+                            )
                             .selectable(true),
-                    );
-                });
-        });
+                        );
+                    });
+            },
+        );
         self.logs_window_open = open;
     }
 
@@ -3984,11 +4124,14 @@ impl CompanionApp {
         }
 
         let mut open = true;
-        egui::Window::new("Credits")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        themed_window(
+            ctx,
+            "Credits",
+            "Credits",
+            egui_phosphor::regular::INFO,
+            &mut open,
+            false,
+            |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(4.0);
                     ui.colored_label(
@@ -4005,7 +4148,8 @@ impl CompanionApp {
                     ui.label("A HUGE THANK YOU to KaufkinNova for the idea and for sponsoring this mod.");
                     ui.add_space(4.0);
                 });
-            });
+            },
+        );
         self.credits_window_open = open;
     }
 
@@ -4062,37 +4206,97 @@ impl CompanionApp {
             log::warn!(target: "companion::app", "settings_flush_boundary outcome=failed");
         }
     }
-    fn draw_menu_contents(&mut self, ui: &mut Ui) {
+    /// Draws the sidebar's bottom section: the maintenance actions that used
+    /// to live behind the title bar's gear menu, styled as flat rows to
+    /// match the nav items above, followed by a faint version footer. When
+    /// the sidebar is collapsed to its icon rail, this shrinks to a single
+    /// gear glyph that just expands the sidebar back out.
+    fn draw_sidebar_footer(&mut self, ui: &mut Ui) {
+        if self.state.sidebar_collapsed {
+            let size = egui::vec2(ui.available_width(), 32.0);
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+            let color = if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                crate::theme::ACCENT_BRIGHT
+            } else {
+                crate::theme::TEXT_DIM
+            };
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::GEAR,
+                egui::FontId::proportional(18.0),
+                color,
+            );
+            if response.clicked() {
+                self.state.sidebar_collapsed = false;
+            }
+            response.on_hover_text("Settings");
+            return;
+        }
+
         let reset_available = !self.state.is_busy();
-        ui.label(format!("Companion version: {}", app_version()));
+
+        // The caller lays this out with a bottom-up layout so the footer
+        // hugs the bottom of the sidebar, which means the first thing added
+        // here ends up lowest on screen. Everything below is therefore built
+        // bottom-to-top: the faint version lines first (so they sit under
+        // every action row, "Latest" being the very last line), then the
+        // action rows, then the top separator.
+        let faint = crate::theme::TEXT_DIM.gamma_multiply(0.6);
         let mod_label = match &self.state.bridge_listener.status().mod_version {
             ModVersionObservation::Unknown => "unknown".to_owned(),
             ModVersionObservation::Legacy => "legacy (no version reporting)".to_owned(),
             ModVersionObservation::Invalid => "invalid".to_owned(),
             ModVersionObservation::Reported(version) => format!("last observed {version}"),
         };
-        ui.label(format!("Mod version: {mod_label}"));
-        match &self.version_check.state {
-            VersionCheckState::Checking => ui.label("Latest stable: checking…"),
-            VersionCheckState::Current { latest } => {
-                ui.label(format!("Latest stable: {latest} (current)"))
-            }
+        let latest_line = match &self.version_check.state {
+            VersionCheckState::Checking => "Latest: checking…".to_owned(),
+            VersionCheckState::Current { latest } => format!("Latest: {latest} (current)"),
             VersionCheckState::UpdateAvailable { latest } => {
-                ui.label(format!("Latest stable: {latest} (update available)"))
+                format!("Latest: {latest} (update available)")
             }
-            VersionCheckState::Unavailable { reason } => {
-                ui.label(format!("Latest stable: unavailable ({reason})"))
-            }
+            VersionCheckState::Unavailable { reason } => format!("Latest: unavailable ({reason})"),
         };
-        let checking = self.version_check.is_checking();
-        if ui
-            .add_enabled(!checking, egui::Button::new("Check for updates"))
-            .clicked()
-        {
-            self.version_check.start(ui.ctx().clone());
-        }
+        ui.colored_label(faint, egui::RichText::new(latest_line).small());
+        ui.colored_label(faint, egui::RichText::new(format!("Mod: {mod_label}")).small());
+        ui.colored_label(
+            faint,
+            egui::RichText::new(format!("Companion v{}", app_version())).small(),
+        );
+
+        ui.add_space(4.0);
         ui.separator();
-        if ui.button("Open config folder").clicked() {
+        ui.add_space(6.0);
+
+        let reset_response = sidebar_row_button(
+            ui,
+            egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
+            "Reset saved state…",
+            reset_available,
+        );
+        if reset_response.clicked() {
+            self.reset_confirmation = true;
+        }
+        if !reset_available {
+            reset_response.on_hover_text(
+                "Wait for connection, test action, and action work to finish before resetting.",
+            );
+        }
+        if sidebar_row_button(ui, egui_phosphor::regular::INFO, "Credits", true).clicked() {
+            self.credits_window_open = true;
+        }
+        if sidebar_row_button(ui, egui_phosphor::regular::FILE_TEXT, "Show logs", true).clicked() {
+            self.logs_window_open = true;
+        }
+        if sidebar_row_button(
+            ui,
+            egui_phosphor::regular::FOLDER_OPEN,
+            "Open config folder",
+            true,
+        )
+        .clicked()
+        {
             log::info!(target: "companion::app", "config_folder_open_requested");
             self.menu_error = self.persistence.open_config_directory().err();
             if let Some(error) = &self.menu_error {
@@ -4103,24 +4307,20 @@ impl CompanionApp {
                 );
             }
         }
-        if ui.button("Show logs").clicked() {
-            self.logs_window_open = true;
-            ui.close();
+        let checking = self.version_check.is_checking();
+        if sidebar_row_button(
+            ui,
+            egui_phosphor::regular::ARROWS_CLOCKWISE,
+            "Check for updates",
+            !checking,
+        )
+        .clicked()
+        {
+            self.version_check.start(ui.ctx().clone());
         }
-        if ui.button("Credits").clicked() {
-            self.credits_window_open = true;
-            ui.close();
-        }
+
         ui.separator();
-        let response = ui.add_enabled(reset_available, egui::Button::new("Reset saved state…"));
-        if response.clicked() {
-            self.reset_confirmation = true;
-        }
-        if !reset_available {
-            response.on_disabled_hover_text(
-                "Wait for connection, test action, and action work to finish before resetting.",
-            );
-        }
+        ui.add_space(4.0);
     }
 
     fn draw_reset_confirmation(&mut self, ctx: &egui::Context) {
@@ -4132,11 +4332,14 @@ impl CompanionApp {
         let mut confirm = false;
         let mut cancel = false;
         let reset_available = !self.state.is_busy();
-        egui::Window::new("Reset saved state?")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
+        themed_window(
+            ctx,
+            "Reset saved state?",
+            "Reset saved state?",
+            egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
+            &mut open,
+            false,
+            |ui| {
                 ui.label(
                     "This clears saved provider setup, target preference, trigger action settings, and log path.",
                 );
@@ -4159,7 +4362,8 @@ impl CompanionApp {
                         confirm = true;
                     }
                 });
-            });
+            },
+        );
         self.reset_confirmation = open && !cancel;
         if confirm && self.reset_and_save() {
             self.reset_confirmation = false;
@@ -4369,7 +4573,7 @@ fn toggle_button(ui: &mut Ui, value: &mut bool) {
     };
     let button = egui::Button::new(egui::RichText::new(label).strong().color(text_color))
         .fill(fill)
-        .corner_radius(egui::CornerRadius::same(255))
+        .corner_radius(egui::CornerRadius::ZERO)
         .min_size(egui::vec2(52.0, 0.0));
     if ui.add(button).clicked() {
         *value = !*value;
@@ -4544,13 +4748,14 @@ fn draw_curve_graph(ui: &mut Ui, curve: &mut IntensityCurve, x_noun: &str) -> bo
 
     let width = ui.available_width();
     let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(width, 220.0), Sense::click_and_drag());
+        ui.allocate_exact_size(Vec2::new(width, 228.0), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
-    // Plot area, leaving room for axis labels.
+    // Plot area, leaving room for axis labels and, below those, the
+    // "<noun> in window" caption so the two rows of text don't collide.
     let plot = Rect::from_min_max(
         pos2(rect.left() + 46.0, rect.top() + 8.0),
-        pos2(rect.right() - 12.0, rect.bottom() - 26.0),
+        pos2(rect.right() - 12.0, rect.bottom() - 34.0),
     );
 
     let last_damage = curve
@@ -4633,14 +4838,21 @@ fn draw_curve_graph(ui: &mut Ui, curve: &mut IntensityCurve, x_noun: &str) -> bo
         line.push(to_screen(damage, curve.level_at(damage)));
     }
     if line.len() >= 2 {
-        let mut fill = line.clone();
-        fill.push(pos2(line[line.len() - 1].x, plot.bottom()));
-        fill.push(pos2(line[0].x, plot.bottom()));
-        painter.add(egui::Shape::convex_polygon(
-            fill,
-            crate::theme::ACCENT.gamma_multiply(0.12),
-            Stroke::NONE,
-        ));
+        // Fill one trapezoid per sample segment rather than one polygon for
+        // the whole curve: a dip (a point lower than its neighbours) makes
+        // the traced outline concave, and `convex_polygon`'s fan
+        // triangulation mis-fills concave outlines (straight-line artifacts
+        // cutting across the dip instead of following it). Each segment's
+        // trapezoid is convex on its own regardless of curve shape, so the
+        // fill always hugs the actual sampled curve, dips included.
+        for pair in line.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            painter.add(egui::Shape::convex_polygon(
+                vec![a, b, pos2(b.x, plot.bottom()), pos2(a.x, plot.bottom())],
+                crate::theme::ACCENT.gamma_multiply(0.12),
+                Stroke::NONE,
+            ));
+        }
         painter.add(egui::Shape::line(
             line.clone(),
             Stroke::new(2.0, crate::theme::ACCENT),
@@ -4762,6 +4974,97 @@ fn draw_curve_graph(ui: &mut Ui, curve: &mut IntensityCurve, x_noun: &str) -> bo
     }
 
     changed
+}
+
+/// A popup window styled to match the rest of the app: the same panel
+/// background and hairline stroke as everything else, with our own
+/// icon+heading header instead of egui's default title bar (whose title
+/// strip doesn't pick up the app's palette and reads as a plain grey bar).
+/// `open` mirrors [`egui::Window::open`]: the header's close button flips it
+/// to `false` to request a close.
+fn themed_window(
+    ctx: &egui::Context,
+    id_source: &str,
+    title: &str,
+    icon: &str,
+    open: &mut bool,
+    resizable: bool,
+    add_contents: impl FnOnce(&mut Ui),
+) {
+    let mut still_open = true;
+    egui::Window::new(id_source)
+        .id(egui::Id::new(id_source))
+        .title_bar(false)
+        .resizable(resizable)
+        .collapsible(false)
+        .frame(
+            egui::Frame::window(&ctx.style_of(egui::Theme::Dark))
+                .fill(crate::theme::PANEL)
+                .stroke(egui::Stroke::new(1.0, crate::theme::STROKE)),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                crate::theme::colored_text_nudged_down(ui, icon, crate::theme::ACCENT, 3.0);
+                ui.label(crate::theme::heading_text(title, 18.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(egui_phosphor::regular::X).frame(false))
+                        .clicked()
+                    {
+                        still_open = false;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+            add_contents(ui);
+        });
+    *open = still_open;
+}
+
+/// A flat, full-width sidebar action row matching the nav items' styling
+/// (leading icon, label, hover highlight, no button border/fill), used for
+/// the maintenance actions in the sidebar footer. Disabled rows stay
+/// hoverable (for `.on_hover_text`) but don't report clicks.
+fn sidebar_row_button(ui: &mut Ui, icon: &str, label: &str, enabled: bool) -> egui::Response {
+    let row_height = 32.0;
+    let desired = egui::vec2(ui.available_width(), row_height);
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(desired, sense);
+
+    let text_color = if !enabled {
+        crate::theme::TEXT_DIM.gamma_multiply(0.6)
+    } else if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        crate::theme::ACCENT_BRIGHT
+    } else {
+        crate::theme::TEXT
+    };
+    if enabled && response.hovered() {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::ZERO, crate::theme::CARD_RAISED);
+    }
+    let icon_pos = rect.left_center() + egui::vec2(14.0, 0.0);
+    ui.painter().text(
+        icon_pos,
+        egui::Align2::LEFT_CENTER,
+        icon,
+        egui::FontId::proportional(16.0),
+        text_color,
+    );
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::new(14.0, crate::theme::heading_family()),
+        text_color,
+    );
+    let label_pos = rect.left_center() + egui::vec2(38.0, -label_galley.size().y / 2.0);
+    ui.painter().galley(label_pos, label_galley, text_color);
+    response
 }
 
 fn status_line(ui: &mut Ui, value: &str, color: [f32; 4]) {

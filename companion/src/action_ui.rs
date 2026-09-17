@@ -85,6 +85,12 @@ fn duration_slider(ui: &mut Ui, label: &str, value: &mut f32) {
             visuals.widgets.hovered.bg_fill = input_background();
             visuals.widgets.active.bg_fill = input_background();
             visuals.selection.bg_fill = ACCENT;
+            // Sliders are the one control that keeps its rounded, pill-shaped
+            // rail and handle after the rest of the UI went square.
+            let corner_radius = egui::CornerRadius::same(255);
+            visuals.widgets.inactive.corner_radius = corner_radius;
+            visuals.widgets.hovered.corner_radius = corner_radius;
+            visuals.widgets.active.corner_radius = corner_radius;
             ui.add(
                 egui::Slider::new(&mut index, 0..=last_index)
                     .show_value(false)
@@ -122,6 +128,10 @@ fn slider_input(
             visuals.widgets.hovered.bg_fill = input_background();
             visuals.widgets.active.bg_fill = input_background();
             visuals.selection.bg_fill = ACCENT;
+            let corner_radius = egui::CornerRadius::same(255);
+            visuals.widgets.inactive.corner_radius = corner_radius;
+            visuals.widgets.hovered.corner_radius = corner_radius;
+            visuals.widgets.active.corner_radius = corner_radius;
             ui.add(
                 egui::Slider::new(value, range.clone())
                     .step_by(step)

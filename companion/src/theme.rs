@@ -76,16 +76,16 @@ pub fn apply(ctx: &Context) {
         &mut visuals.widgets.active,
         &mut visuals.widgets.open,
     ] {
-        widget.corner_radius = CornerRadius::same(8);
+        widget.corner_radius = CornerRadius::ZERO;
         // Calmer pointer feel: controls don't swell on hover, they just
         // re-tint. One less thing twitching under the cursor.
         widget.expansion = 0.0;
     }
 
-    // Consistent rounding across the chrome, and drop shadows that lift
+    // Square corners throughout the chrome, and drop shadows that lift
     // popovers off the page without the heavy default vignette.
-    visuals.window_corner_radius = CornerRadius::same(10);
-    visuals.menu_corner_radius = CornerRadius::same(10);
+    visuals.window_corner_radius = CornerRadius::ZERO;
+    visuals.menu_corner_radius = CornerRadius::ZERO;
     visuals.weak_text_alpha = 0.65;
     visuals.disabled_alpha = 0.45;
     visuals.window_shadow = egui::Shadow {
@@ -170,12 +170,27 @@ pub fn install_fonts(ctx: &Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Runs `add` with sliders' rail and handle rounded back to a pill shape —
+/// the one control that keeps rounded corners after the rest of the UI went
+/// square, since a flat rectangular rail and handle read poorly as a slider.
+/// Scoped, so it never leaks the rounding onto buttons or other widgets.
+pub fn rounded_sliders(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        let corner_radius = CornerRadius::same(255);
+        let visuals = ui.visuals_mut();
+        visuals.widgets.inactive.corner_radius = corner_radius;
+        visuals.widgets.hovered.corner_radius = corner_radius;
+        visuals.widgets.active.corner_radius = corner_radius;
+        add(ui);
+    });
+}
+
 /// A rounded, tinted card frame used to group related controls.
 pub fn card(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::group(ui.style())
         .fill(CARD)
         .stroke(Stroke::new(1.0, STROKE))
-        .corner_radius(CornerRadius::same(10))
+        .corner_radius(CornerRadius::ZERO)
         .inner_margin(16.0)
 }
 
@@ -217,7 +232,7 @@ pub fn badge(ui: &mut egui::Ui, text: &str, tone: BadgeTone) {
     egui::Frame::NONE
         .fill(color.gamma_multiply(0.16))
         .stroke(Stroke::new(1.0, color.gamma_multiply(0.55)))
-        .corner_radius(CornerRadius::same(255))
+        .corner_radius(CornerRadius::ZERO)
         .inner_margin(egui::Margin::symmetric(9, 3))
         .show(ui, |ui| {
             ui.horizontal(|ui| {

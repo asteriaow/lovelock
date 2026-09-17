@@ -244,6 +244,11 @@ impl PersistedIntensityCurve {
 // `PersistedTriggerKind` variant and `soul_secure` field stay so an older
 // state file still deserializes, and it is dropped from the live order on
 // load. `DamageTakenIntensity` is likewise persisted-only.
+// `AllyShielded`, `SoulDeny`, `ParrySuccess` and `ParryFail` are temporarily
+// pulled from `PRIORITY_ORDER_DEFAULT` in app.rs; they're moved to the tail
+// here (same spot as `DamageTakenIntensity`) so the padding
+// `normalize_priority_order` does for a freshly reset/written file lines up
+// with the live order instead of re-inserting them mid-list.
 const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 20] = [
     PersistedTriggerKind::LocalPlayerDeath,
     PersistedTriggerKind::LocalPlayerKill,
@@ -253,17 +258,17 @@ const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 20] = [
     PersistedTriggerKind::DamageTaken,
     PersistedTriggerKind::HealingReceived,
     PersistedTriggerKind::AllyHealed,
-    PersistedTriggerKind::AllyShielded,
     PersistedTriggerKind::DamageGiven,
-    PersistedTriggerKind::SoulDeny,
-    PersistedTriggerKind::ParrySuccess,
-    PersistedTriggerKind::ParryFail,
     PersistedTriggerKind::ObjectiveGuardian,
     PersistedTriggerKind::ObjectiveWalker,
     PersistedTriggerKind::ObjectiveBaseGuardian,
     PersistedTriggerKind::ObjectiveShrine,
     PersistedTriggerKind::ObjectivePatronWeakened,
     PersistedTriggerKind::GameWon,
+    PersistedTriggerKind::AllyShielded,
+    PersistedTriggerKind::SoulDeny,
+    PersistedTriggerKind::ParrySuccess,
+    PersistedTriggerKind::ParryFail,
     PersistedTriggerKind::DamageTakenIntensity,
 ];
 
@@ -1573,11 +1578,7 @@ mod tests {
             TriggerKind::DamageTaken,
             TriggerKind::HealingReceived,
             TriggerKind::AllyHealed,
-            TriggerKind::AllyShielded,
             TriggerKind::DamageGiven,
-            TriggerKind::SoulDeny,
-            TriggerKind::ParrySuccess,
-            TriggerKind::ParryFail,
             TriggerKind::ObjectiveGuardian,
             TriggerKind::ObjectiveWalker,
             TriggerKind::ObjectiveBaseGuardian,
