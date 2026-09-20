@@ -11,15 +11,17 @@ use crate::action::{
 };
 use crate::bridge_listener::{
     AbilityTrigger, BridgeEvent, ConsoleLogListener, CountTrigger, ListenerPhase, ListenerStatus,
-    LocalPlayerDeath, LocalPlayerRespawn, ModVersionObservation, VitalsTrigger,
+    LocalPlayerDeath, LocalPlayerRespawn, VitalsTrigger,
 };
 use crate::deadlock_path::{self, Detection, DetectionError};
 use crate::logging::{LogSnapshot, LogStore};
 use crate::persistence::{PersistedState, Persistence, default_state_path};
-use crate::provider::{ConnectedProvider, ProviderError, ProviderSettings, ProviderTarget, TargetId};
+use crate::provider::{
+    ConnectedProvider, ProviderError, ProviderSettings, ProviderTarget, TargetId,
+};
 use crate::version_check::{
-    LATEST_RELEASE_URL, VersionCheckOwner, VersionCheckState, WarningSelection, app_version,
-    select_warnings,
+    COMPANION_RELEASE_URL, LATEST_RELEASE_URL, MOD_RELEASE_URL, VersionCheckOwner,
+    VersionCheckState, WarningSelection, app_version, select_warnings,
 };
 use egui::{Color32, TextEdit, Ui};
 
@@ -81,11 +83,11 @@ impl AbilityFilter {
 /// soul gain, so "you shot the orb" is not detectable.
 /// `DamageTakenIntensity` was folded into `DamageTaken`, which now runs the
 /// intensity curve itself.
-/// `AllyShielded`, `SoulDeny`, `ParrySuccess` and `ParryFail` are temporarily
+/// `AllyHealed`, `AllyShielded`, `SoulDeny`, `ParrySuccess` and `ParryFail` are temporarily
 /// pulled from this build (enum variants, settings fields and persistence
 /// stay, per the retirement pattern above) -- re-add their lines to bring
 /// them back.
-pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 15] = [
+pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 14] = [
     TriggerKind::Death,
     TriggerKind::Kill,
     TriggerKind::Assist,
@@ -93,7 +95,6 @@ pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 15] = [
     TriggerKind::AbilityCooldownReady,
     TriggerKind::DamageTaken,
     TriggerKind::HealingReceived,
-    TriggerKind::AllyHealed,
     TriggerKind::DamageGiven,
     TriggerKind::ObjectiveGuardian,
     TriggerKind::ObjectiveWalker,
@@ -116,6 +117,7 @@ pub struct EffectProfile {
     pub name: String,
     pub triggers: TriggerSettingsSet,
     pub resting_strength: u8,
+    pub resting_enabled: bool,
 }
 impl EffectProfile {
     pub fn new(name: impl Into<String>) -> Self {
@@ -123,6 +125,7 @@ impl EffectProfile {
             name: name.into(),
             triggers: TriggerSettingsSet::default(),
             resting_strength: 0,
+            resting_enabled: true,
         }
     }
 }
@@ -314,6 +317,13 @@ impl CredentialState {
             Self::Invalid => "Connection failed",
         }
     }
+    fn tone(self) -> crate::theme::BadgeTone {
+        match self {
+            Self::Unknown | Self::Testing => crate::theme::BadgeTone::Neutral,
+            Self::Valid => crate::theme::BadgeTone::Success,
+            Self::Invalid => crate::theme::BadgeTone::Danger,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -330,6 +340,13 @@ impl LogDetectionStatus {
                 "Deadlock is installed, but console.log has not been created. Add -condebug to Deadlock's Steam launch options, then launch the game."
             }
             Self::Failed(message) => message,
+        }
+    }
+    fn tone(&self) -> crate::theme::BadgeTone {
+        match self {
+            Self::Found => crate::theme::BadgeTone::Success,
+            Self::NotCreated => crate::theme::BadgeTone::Warning,
+            Self::Failed(_) => crate::theme::BadgeTone::Danger,
         }
     }
 }
@@ -369,6 +386,13 @@ impl TestActionStatus {
             Self::Sending => "Sending test vibration…",
             Self::Sent => "Test vibration sent.",
             Self::Failed(message) => message,
+        }
+    }
+    fn tone(&self) -> crate::theme::BadgeTone {
+        match self {
+            Self::Sending => crate::theme::BadgeTone::Neutral,
+            Self::Sent => crate::theme::BadgeTone::Success,
+            Self::Failed(_) => crate::theme::BadgeTone::Danger,
         }
     }
 }
@@ -416,7 +440,7 @@ impl TriggerKind {
             Self::HealingReceived => "healing received",
             Self::AllyHealed => "ally healed",
             Self::AllyShielded => "ally shielded",
-            Self::DamageGiven => "damage given",
+            Self::DamageGiven => "damage dealt",
             Self::SoulDeny => "soul deny",
             Self::SoulSecure => "soul secure",
             Self::ParrySuccess => "parry success",
@@ -429,15 +453,6 @@ impl TriggerKind {
             Self::GameWon => "game won",
             Self::DamageTakenIntensity => "damage intensity",
         }
-    }
-
-    /// Whether this trigger's strength comes from an intensity curve (windowed
-    /// amount -> level) instead of a Fixed/Random vibrate setting.
-    fn is_intensity_curve(self) -> bool {
-        matches!(
-            self,
-            Self::DamageTaken | Self::HealingReceived | Self::DamageGiven
-        )
     }
 
     /// The noun for this curve's windowed amount, for summaries and axis labels.
@@ -624,6 +639,15 @@ impl AppSection {
             Self::Donate => "Donate",
         }
     }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Setup => egui_phosphor::regular::VIBRATE,
+            Self::Effects => egui_phosphor::regular::SPARKLE,
+            Self::GameConnection => egui_phosphor::regular::PLUGS_CONNECTED,
+            Self::Donate => egui_phosphor::regular::HEART,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -638,7 +662,8 @@ struct TriggerIdentity {
     charges_before: Option<u64>,
     charges_after: Option<u64>,
     /// Total accumulated within the trigger's rolling window, for an
-    /// intensity-curve trigger kind (see [`TriggerKind::is_intensity_curve`]).
+    /// intensity-curve trigger kind (one with a configured amount curve;
+    /// see [`TriggerSettingsSet::amount_curve`]).
     amount_total: Option<f32>,
     /// When set, [`AppState::queue_trigger_action`] plays exactly this action
     /// instead of resolving the trigger's own settings, and the identity does
@@ -737,7 +762,12 @@ impl TriggerIdentity {
                 | TriggerKind::GameWon
                 | TriggerKind::DamageTakenIntensity
         ) {
-            return format!("{} {}#{}", self.kind.label(), self.session_id, self.sequence);
+            return format!(
+                "{} {}#{}",
+                self.kind.label(),
+                self.session_id,
+                self.sequence
+            );
         }
         if let Some(total) = self.amount_total {
             return format!(
@@ -1057,6 +1087,8 @@ pub struct AppState {
     /// User-set baseline the toy holds between triggers (0-20; 0 disables it and
     /// keeps the pre-baseline behaviour of stopping after each effect).
     pub resting_strength: u8,
+    /// Master on/off for the baseline; the strength is kept while it is off.
+    pub resting_enabled: bool,
     resting_sender: SyncSender<RestingJob>,
     resting_result: Receiver<RestingCompletion>,
     /// Strength last confirmed as applied to the toy as a resting level, so an
@@ -1090,6 +1122,12 @@ pub struct AppState {
     /// its initial keyboard focus.
     renaming_profile: Option<usize>,
     renaming_needs_focus: bool,
+    /// UI-only: the text buffer backing the Setup page's HTTP port field.
+    /// Kept separate from `provider_settings.lovense.http_port` (and only
+    /// resynced from it while the field isn't focused) so a string-round-trip
+    /// through a freshly-formatted value doesn't snap back to the last valid
+    /// port on every keystroke that doesn't parse yet.
+    port_input: String,
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -1116,6 +1154,7 @@ impl Default for AppState {
             action_in_flight: 0,
             action_status: None,
             resting_strength: 0,
+            resting_enabled: true,
             resting_sender,
             resting_result,
             resting_applied: None,
@@ -1139,6 +1178,7 @@ impl Default for AppState {
             copy_feedback: None,
             renaming_profile: None,
             renaming_needs_focus: false,
+            port_input: String::new(),
         }
     }
 }
@@ -1205,6 +1245,7 @@ impl AppState {
         self.resting_sender = resting_sender;
         self.resting_result = resting_result;
         self.resting_strength = 0;
+        self.resting_enabled = true;
         self.resting_applied = None;
         self.resting_last_sent = None;
         self.resting_in_flight = false;
@@ -1221,6 +1262,7 @@ impl AppState {
         if let Some(profile) = self.profiles.get_mut(self.active_profile) {
             profile.triggers = self.triggers.clone();
             profile.resting_strength = self.resting_strength;
+            profile.resting_enabled = self.resting_enabled;
         }
     }
 
@@ -1232,6 +1274,7 @@ impl AppState {
         if let Some(profile) = self.profiles.get(self.active_profile).cloned() {
             self.triggers = profile.triggers;
             self.resting_strength = profile.resting_strength;
+            self.resting_enabled = profile.resting_enabled;
         }
         self.damage_taken_intensity.reset();
         self.healing_intensity.reset();
@@ -1267,7 +1310,10 @@ impl AppState {
         if !taken(base) {
             return base.to_owned();
         }
-        (2..).map(|n| format!("{base} {n}")).find(|c| !taken(c)).unwrap()
+        (2..)
+            .map(|n| format!("{base} {n}"))
+            .find(|c| !taken(c))
+            .unwrap()
     }
 
     fn push_profile_and_activate(&mut self, profile: EffectProfile) {
@@ -1300,6 +1346,7 @@ impl AppState {
             name: self.unique_profile_name(&format!("{} copy", source.name)),
             triggers: source.triggers,
             resting_strength: source.resting_strength,
+            resting_enabled: source.resting_enabled,
         };
         self.push_profile_and_activate(profile);
     }
@@ -1767,7 +1814,11 @@ impl AppState {
         if !gate_open {
             return;
         }
-        let desired = self.resting_strength.min(20);
+        let desired = if self.resting_enabled {
+            self.resting_strength.min(20)
+        } else {
+            0
+        };
         // With the baseline disabled and nothing to wind down from, leave the
         // toy alone entirely: a trigger's own timed command already stops it,
         // and a partner may be driving it from their phone.
@@ -2363,12 +2414,11 @@ impl AppState {
                         BridgeEvent::LocalPlayerAssist(assist) => {
                             Some(TriggerIdentity::from_count(TriggerKind::Assist, assist))
                         }
-                        BridgeEvent::AllyHealed(count) => {
-                            Some(TriggerIdentity::from_count(TriggerKind::AllyHealed, count))
-                        }
-                        BridgeEvent::AllyShielded(count) => {
-                            Some(TriggerIdentity::from_count(TriggerKind::AllyShielded, count))
-                        }
+                        BridgeEvent::AllyHealed(_) => None,
+                        BridgeEvent::AllyShielded(count) => Some(TriggerIdentity::from_count(
+                            TriggerKind::AllyShielded,
+                            count,
+                        )),
                         BridgeEvent::AbilityUsed(ability) => Some(TriggerIdentity::from_ability(
                             TriggerKind::AbilityUse,
                             ability,
@@ -2400,9 +2450,10 @@ impl AppState {
                         BridgeEvent::SoulSecure(count) => {
                             Some(TriggerIdentity::from_count(TriggerKind::SoulSecure, count))
                         }
-                        BridgeEvent::ParrySuccess(count) => {
-                            Some(TriggerIdentity::from_count(TriggerKind::ParrySuccess, count))
-                        }
+                        BridgeEvent::ParrySuccess(count) => Some(TriggerIdentity::from_count(
+                            TriggerKind::ParrySuccess,
+                            count,
+                        )),
                         BridgeEvent::ParryFail(count) => {
                             Some(TriggerIdentity::from_count(TriggerKind::ParryFail, count))
                         }
@@ -2421,9 +2472,12 @@ impl AppState {
                             TriggerKind::ObjectiveShrine,
                             count,
                         )),
-                        BridgeEvent::ObjectivePatronWeakened(count) => Some(
-                            TriggerIdentity::from_count(TriggerKind::ObjectivePatronWeakened, count),
-                        ),
+                        BridgeEvent::ObjectivePatronWeakened(count) => {
+                            Some(TriggerIdentity::from_count(
+                                TriggerKind::ObjectivePatronWeakened,
+                                count,
+                            ))
+                        }
                         BridgeEvent::GameWon(count) => {
                             Some(TriggerIdentity::from_count(TriggerKind::GameWon, count))
                         }
@@ -2561,6 +2615,1209 @@ impl AppState {
         }
     }
 
+    // -----------------------------------------------------------------
+    // UI: left navigation rail
+    // -----------------------------------------------------------------
+
+    /// The left nav rail: one compact row per [`AppSection`], muted when
+    /// inactive, with a soft tinted background, a narrow pink indicator on
+    /// the left edge, and pink text/icon when selected.
+    fn draw_sidebar(&mut self, ui: &mut Ui) {
+        for section in [
+            AppSection::Setup,
+            AppSection::Effects,
+            AppSection::GameConnection,
+            AppSection::Donate,
+        ] {
+            let selected = self.selected_section == section;
+            let row_height = 44.0;
+            let desired = egui::vec2(ui.available_width(), row_height);
+            let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+
+            if response.clicked() {
+                self.selected_section = section;
+            }
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
+            let painter = ui.painter();
+            if selected {
+                painter.rect_filled(
+                    rect,
+                    egui::CornerRadius::same(crate::theme::RADIUS_MD),
+                    crate::theme::ACCENT_PINK.gamma_multiply(0.16),
+                );
+                let bar =
+                    egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height()));
+                painter.rect_filled(bar, egui::CornerRadius::same(2), crate::theme::ACCENT_PINK);
+            } else if response.hovered() {
+                painter.rect_filled(
+                    rect,
+                    egui::CornerRadius::same(crate::theme::RADIUS_MD),
+                    crate::theme::SURFACE_HOVER,
+                );
+            }
+
+            let text_color = if selected {
+                crate::theme::ACCENT_PINK
+            } else {
+                crate::theme::TEXT_SECONDARY
+            };
+            let icon_pos = rect.left_center() + egui::vec2(14.0, 0.0);
+            painter.text(
+                crate::theme::glyph_center(icon_pos, 16.0),
+                egui::Align2::LEFT_CENTER,
+                section.icon(),
+                egui::FontId::proportional(16.0),
+                text_color,
+            );
+            let label_pos = rect.left_center() + egui::vec2(38.0, 0.0);
+            painter.text(
+                crate::theme::glyph_center(label_pos, 14.0),
+                egui::Align2::LEFT_CENTER,
+                section.label(),
+                egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                text_color,
+            );
+
+            ui.add_space(2.0);
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // UI: page header
+    // -----------------------------------------------------------------
+
+    /// A compact page header: display-font title, a one-line muted
+    /// subtitle, and an optional primary action pinned to the right.
+    fn page_header(
+        ui: &mut Ui,
+        title: &str,
+        subtitle: &str,
+        action: impl FnOnce(&mut Ui) -> Option<egui::Response>,
+    ) -> Option<egui::Response> {
+        let mut result = None;
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.add(egui::Label::new(
+                    crate::theme::heading_text(title, crate::theme::SIZE_PAGE_TITLE)
+                        .color(crate::theme::TEXT_PRIMARY),
+                ));
+                ui.add(egui::Label::new(
+                    egui::RichText::new(subtitle)
+                        .size(crate::theme::SIZE_BODY)
+                        .color(crate::theme::TEXT_SECONDARY),
+                ));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                result = action(ui);
+            });
+        });
+        ui.add_space(crate::theme::SPACE_LG);
+        result
+    }
+
+    // -----------------------------------------------------------------
+    // UI: Effects page
+    // -----------------------------------------------------------------
+
+    fn draw_effects(&mut self, ui: &mut Ui, busy: bool) {
+        let mut add_profile = false;
+        Self::page_header(
+            ui,
+            "Effects",
+            "Configure haptic effects that respond to in-game events.",
+            |ui| {
+                let response = crate::theme::button_primary(ui, "+ New profile");
+                if response.clicked() {
+                    add_profile = true;
+                }
+                Some(response)
+            },
+        );
+        if add_profile {
+            self.add_blank_profile();
+        }
+
+        self.draw_profile_row(ui);
+        ui.add_space(crate::theme::SPACE_XS);
+
+        let available = ui.available_size();
+        let gap = crate::theme::SPACE_LG;
+        let left_width = ((available.x - gap) * 0.41).max(260.0);
+        let right_width = (available.x - gap - left_width).max(320.0);
+
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(left_width, available.y),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(left_width);
+                    self.draw_trigger_list(ui, busy);
+                },
+            );
+            ui.add_space(gap);
+            ui.allocate_ui_with_layout(
+                egui::vec2(right_width, available.y),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(right_width);
+                    self.draw_trigger_inspector(ui, busy);
+                },
+            );
+        });
+    }
+
+    /// Compact horizontal profile switcher: one selectable card per profile
+    /// plus a trailing "create" card, scrolling sideways instead of
+    /// wrapping when there are too many to fit.
+    fn draw_profile_row(&mut self, ui: &mut Ui) {
+        let mut switch_to = None;
+        let mut duplicate = None;
+        let mut delete = None;
+        let mut commit_rename_index = None;
+
+        egui::ScrollArea::horizontal()
+            .id_salt("profile-row-scroll")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for index in 0..self.profiles.len() {
+                        let active = index == self.active_profile;
+                        let renaming = self.renaming_profile == Some(index);
+                        let frame = if active {
+                            crate::theme::surface_selected(ui)
+                        } else {
+                            crate::theme::surface(ui)
+                        }
+                        .inner_margin(egui::Margin {
+                            left: 12,
+                            right: 12,
+                            top: 6,
+                            bottom: 4,
+                        });
+
+                        let mut response = frame.show(ui, |ui| {
+                            ui.set_min_size(egui::vec2(120.0, 38.0));
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.vertical(|ui| {
+                                if renaming {
+                                    let edit = ui.add(
+                                        TextEdit::singleline(&mut self.profiles[index].name)
+                                            .background_color(crate::theme::INPUT_BG)
+                                            .desired_width(130.0),
+                                    );
+                                    if self.renaming_needs_focus {
+                                        edit.request_focus();
+                                        self.renaming_needs_focus = false;
+                                    }
+                                    if edit.lost_focus() {
+                                        commit_rename_index = Some(index);
+                                    }
+                                } else {
+                                    let name_color = if active {
+                                        crate::theme::ACCENT_PINK
+                                    } else {
+                                        crate::theme::TEXT_PRIMARY
+                                    };
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(&self.profiles[index].name)
+                                            .size(crate::theme::SIZE_CONTROL_LABEL)
+                                            .color(name_color),
+                                    ));
+                                    // The active profile's edits live in
+                                    // `self.triggers` and only get copied
+                                    // back into `self.profiles[index]` on a
+                                    // switch/save, so read the live copy for
+                                    // it or this count lags a frame behind
+                                    // toggling a trigger.
+                                    let triggers = if active {
+                                        &self.triggers
+                                    } else {
+                                        &self.profiles[index].triggers
+                                    };
+                                    let trigger_count = triggers
+                                        .priority_order
+                                        .iter()
+                                        .filter(|kind| triggers.get(**kind).enabled)
+                                        .count();
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(format!(
+                                            "{trigger_count} trigger{}",
+                                            if trigger_count == 1 { "" } else { "s" }
+                                        ))
+                                        .size(crate::theme::SIZE_META)
+                                        .color(crate::theme::TEXT_MUTED),
+                                    ));
+                                }
+                            });
+                        });
+                        if !renaming {
+                            response.response = response.response.interact(egui::Sense::click());
+                        }
+
+                        if !renaming && response.response.clicked() {
+                            switch_to = Some(index);
+                        }
+                        if response.response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        response.response.context_menu(|ui| {
+                            if ui.button("Rename").clicked() {
+                                self.begin_rename_profile(index);
+                                ui.close();
+                            }
+                            if ui.button("Duplicate").clicked() {
+                                duplicate = Some(index);
+                                ui.close();
+                            }
+                            if self.profiles.len() > 1 && ui.button("Delete").clicked() {
+                                delete = Some(index);
+                                ui.close();
+                            }
+                        });
+                        ui.add_space(crate::theme::SPACE_SM);
+                    }
+                });
+            });
+
+        if let Some(index) = commit_rename_index {
+            self.commit_profile_rename(index);
+        }
+        if let Some(index) = switch_to {
+            self.switch_profile(index);
+        }
+        if let Some(index) = duplicate {
+            self.duplicate_profile(index);
+        }
+        if let Some(index) = delete {
+            self.delete_profile(index);
+        }
+    }
+
+    /// The left column: one compact selectable row per trigger, in
+    /// overlap-priority order, reorderable by dragging.
+    fn draw_trigger_list(&mut self, ui: &mut Ui, busy: bool) {
+        ui.add(egui::Label::new(
+            crate::theme::heading_text("Triggers", crate::theme::SIZE_SECTION_TITLE)
+                .color(crate::theme::TEXT_PRIMARY),
+        ));
+        ui.add(egui::Label::new(
+            egui::RichText::new("Each trigger has its own vibration pattern and settings.")
+                .size(crate::theme::SIZE_META)
+                .color(crate::theme::TEXT_MUTED),
+        ));
+        ui.add_space(crate::theme::SPACE_MD);
+
+        ui.add(egui::Label::new(
+            egui::RichText::new(
+                "Drag a row by its grip to set which effect wins when two fire close together.",
+            )
+            .size(crate::theme::SIZE_META)
+            .color(crate::theme::TEXT_MUTED),
+        ));
+        ui.add_space(crate::theme::SPACE_SM);
+
+        // The list *is* the overlap-priority order: it renders in
+        // `priority_order`, only the grip is a drag source, and dropping it
+        // onto another row rewrites the order. Clicking a row's body (not
+        // its toggle) selects it.
+        let order = self.triggers.priority_order.clone();
+        let mut drag_from = None;
+        let mut drag_to = None;
+
+        egui::ScrollArea::vertical()
+            .id_salt("effects-trigger-list-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (position, kind) in order.iter().copied().enumerate() {
+                    let selected = self.selected_effect == kind;
+                    let enabled = self.triggers.get(kind).enabled;
+                    let summary = trigger_summary(&self.triggers, kind);
+
+                    let frame = if selected {
+                        crate::theme::surface_selected(ui)
+                    } else if enabled {
+                        crate::theme::surface_enabled(ui)
+                    } else {
+                        crate::theme::surface(ui)
+                    };
+
+                    let mut controls_rect = egui::Rect::NOTHING;
+                    let row = frame.show(ui, |ui| {
+                        ui.set_min_height(48.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = crate::theme::SPACE_MD;
+                            ui.dnd_drag_source(
+                                ui.id().with(("trigger_grip", position)),
+                                PriorityDragIndex(position),
+                                crate::theme::drag_handle,
+                            )
+                            .response
+                            .on_hover_text("Drag to reorder priority");
+                            let icon_tone = if selected {
+                                crate::theme::IconTone::Selected
+                            } else if enabled {
+                                crate::theme::IconTone::On
+                            } else {
+                                crate::theme::IconTone::Off
+                            };
+                            crate::theme::icon_badge(ui, trigger_icon(kind), icon_tone, 34.0);
+                            // Controls added right-to-left first, so their
+                            // rect can be excluded from the row's own click
+                            // area below - otherwise the toggle sits under
+                            // the row's click sense and never receives its
+                            // own click.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(egui_phosphor::regular::CARET_RIGHT)
+                                            .size(14.0)
+                                            .color(crate::theme::TEXT_MUTED),
+                                    ));
+                                    ui.add_space(crate::theme::SPACE_SM);
+                                    let mut toggle_value = enabled;
+                                    if crate::theme::toggle(ui, &mut toggle_value).changed() {
+                                        self.triggers.get_mut(kind).enabled = toggle_value;
+                                    }
+                                    controls_rect = ui.min_rect();
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.vertical(|ui| {
+                                                let name_color = if enabled {
+                                                    crate::theme::TEXT_PRIMARY
+                                                } else {
+                                                    crate::theme::TEXT_MUTED
+                                                };
+                                                ui.add(egui::Label::new(
+                                                    egui::RichText::new(trigger_display_label(
+                                                        kind,
+                                                    ))
+                                                    .size(crate::theme::SIZE_CONTROL_LABEL)
+                                                    .color(name_color),
+                                                ));
+                                                ui.add(egui::Label::new(
+                                                    egui::RichText::new(summary)
+                                                        .size(crate::theme::SIZE_META)
+                                                        .color(crate::theme::TEXT_MUTED),
+                                                ));
+                                            });
+                                        },
+                                    );
+                                },
+                            );
+                        });
+                    });
+                    let row_rect = row.response.rect;
+
+                    // A grip being dragged over this row: show where it
+                    // would land and, on release, record the move.
+                    if let (Some(pointer), Some(_hovered)) = (
+                        ui.input(|i| i.pointer.interact_pos()),
+                        row.response.dnd_hover_payload::<PriorityDragIndex>(),
+                    ) {
+                        let above = pointer.y < row_rect.center().y;
+                        let stripe_y = if above {
+                            row_rect.top()
+                        } else {
+                            row_rect.bottom()
+                        };
+                        ui.painter().hline(
+                            row_rect.x_range(),
+                            stripe_y,
+                            egui::Stroke::new(2.0, crate::theme::ACCENT_PINK),
+                        );
+                        if let Some(payload) =
+                            row.response.dnd_release_payload::<PriorityDragIndex>()
+                        {
+                            drag_from = Some(payload.0);
+                            drag_to = Some(if above { position } else { position + 1 });
+                        }
+                    }
+
+                    // Restrict the click-to-select area to the left of the
+                    // controls (grip + toggle live there and handle their
+                    // own interactions).
+                    let mut click_rect = row_rect;
+                    if controls_rect.is_positive() {
+                        click_rect.max.x = controls_rect.min.x;
+                    }
+                    let row_id = ui.id().with(("trigger_row_click", position));
+                    let click_response = ui.interact(click_rect, row_id, egui::Sense::click());
+                    if click_response.clicked() {
+                        self.select_effect(kind);
+                    }
+                    if click_response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+
+                    ui.add_space(crate::theme::SPACE_SM);
+                }
+            });
+
+        if let (Some(from), Some(mut to)) = (drag_from, drag_to)
+            && from != to
+        {
+            let mut new_order = order.clone();
+            let moved = new_order.remove(from);
+            if from < to {
+                to -= 1;
+            }
+            new_order.insert(to.min(new_order.len()), moved);
+            self.triggers.priority_order = new_order;
+        }
+        let _ = busy;
+    }
+
+    /// The right column: an inspector/property editor for the selected
+    /// trigger, not another nested "page".
+    fn draw_trigger_inspector(&mut self, ui: &mut Ui, busy: bool) {
+        let kind = self.selected_effect;
+        egui::ScrollArea::vertical()
+            .id_salt("effects-editor-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(crate::theme::SPACE_SM);
+                let mut enabled = self.triggers.get(kind).enabled;
+                ui.horizontal(|ui| {
+                    let icon_tone = if enabled {
+                        crate::theme::IconTone::Selected
+                    } else {
+                        crate::theme::IconTone::Off
+                    };
+                    crate::theme::icon_badge(ui, trigger_icon(kind), icon_tone, 44.0);
+                    ui.vertical(|ui| {
+                        ui.add(egui::Label::new(
+                            crate::theme::heading_text(
+                                format!("{} effect", trigger_display_label(kind)),
+                                crate::theme::SIZE_SECTION_TITLE,
+                            )
+                            .color(crate::theme::TEXT_PRIMARY),
+                        ));
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(format!(
+                                "Triggered on {}.",
+                                trigger_display_label(kind).to_lowercase()
+                            ))
+                            .size(crate::theme::SIZE_META)
+                            .color(crate::theme::TEXT_MUTED),
+                        ));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::theme::toggle(ui, &mut enabled).changed() {
+                            self.triggers.get_mut(kind).enabled = enabled;
+                        }
+                    });
+                });
+
+                if kind == TriggerKind::Death {
+                    crate::theme::divider(ui);
+                    crate::theme::section_heading(ui, "Trigger options");
+                    ui.add_space(crate::theme::SPACE_SM);
+                    crate::theme::checkbox_row(
+                        ui,
+                        &mut self.triggers.death_hold_until_respawn,
+                        "Hold until I respawn",
+                        Some("Keep vibration active until respawn."),
+                    );
+                    ui.add_space(crate::theme::SPACE_SM);
+                    crate::theme::checkbox_row(
+                        ui,
+                        &mut self.triggers.suppress_triggers_while_dead,
+                        "Ignore ability, assist & ally support while dead",
+                        Some("Prevent other effects from interrupting death."),
+                    );
+                }
+
+                if let Some(filter) = self.triggers.ability_filter(kind).cloned() {
+                    crate::theme::divider(ui);
+                    self.draw_ability_filter(ui, kind, filter, busy);
+                }
+
+                crate::theme::divider(ui);
+                crate::theme::section_heading(ui, "Copy settings from");
+                ui.add_space(crate::theme::SPACE_SM);
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("copy-source")
+                        .selected_text(trigger_display_label(self.copy_source))
+                        .show_ui(ui, |ui| {
+                            for source in PRIORITY_ORDER_DEFAULT {
+                                if source == kind {
+                                    continue;
+                                }
+                                ui.selectable_value(
+                                    &mut self.copy_source,
+                                    source,
+                                    trigger_display_label(source),
+                                );
+                            }
+                        });
+                    if crate::theme::button_secondary(ui, "Copy").clicked() {
+                        self.copy_action_settings(self.copy_source, kind);
+                    }
+                });
+                if let Some(feedback) = &self.copy_feedback {
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(feedback)
+                            .size(crate::theme::SIZE_META)
+                            .color(crate::theme::SUCCESS),
+                    ));
+                }
+
+                if let Some(mut curve) = self.triggers.amount_curve(kind).cloned() {
+                    crate::theme::divider(ui);
+                    crate::theme::section_heading(ui, "Intensity settings");
+                    ui.add_space(crate::theme::SPACE_SM);
+                    let noun = kind.intensity_noun();
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(format!(
+                            "The more {noun} inside the window, the stronger the pulse. Drag the dots to shape the curve, right-click empty space (or double-click) to add a point, right-click a point (or select it and press Delete) to remove it."
+                        ))
+                        .size(crate::theme::SIZE_META)
+                        .color(crate::theme::TEXT_MUTED),
+                    ));
+                    ui.add_space(crate::theme::SPACE_SM);
+                    let mut changed = crate::theme::labeled_slider(
+                        ui,
+                        "Window",
+                        &mut curve.window_seconds,
+                        0.5..=MAX_INTENSITY_WINDOW_SECS,
+                        0.5,
+                        |v| format!("{v:.1} s"),
+                    )
+                    .changed();
+                    if crate::theme::labeled_slider(
+                        ui,
+                        "Pulse length",
+                        &mut curve.pulse_seconds,
+                        0.25..=5.0,
+                        0.25,
+                        |v| format!("{v:.2} s"),
+                    )
+                    .changed()
+                    {
+                        curve.pulse_seconds =
+                            crate::action::nearest_duration_step(curve.pulse_seconds);
+                        changed = true;
+                    }
+                    ui.add_space(crate::theme::SPACE_SM);
+                    changed |= draw_curve_graph(ui, &mut curve, noun);
+                    ui.add_space(crate::theme::SPACE_XS);
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(curve.summary_with_noun(noun))
+                            .size(crate::theme::SIZE_META)
+                            .color(crate::theme::TEXT_MUTED),
+                    ));
+                    if changed {
+                        curve.normalize();
+                    }
+                    if let Some(stored) = self.triggers.amount_curve_mut(kind) {
+                        *stored = curve;
+                    }
+                } else {
+                    crate::theme::divider(ui);
+                    crate::theme::section_heading(ui, "Vibration settings");
+                    ui.add_space(crate::theme::SPACE_SM);
+                    let mut actions = self.triggers.get(kind).actions.clone();
+                    crate::action_ui::draw_vibrate_settings_editor(ui, &mut actions);
+                    self.triggers.get_mut(kind).actions = actions;
+                }
+
+                ui.add_space(crate::theme::SPACE_LG);
+                self.draw_emergency_stop(ui);
+            });
+    }
+
+    fn draw_ability_filter(
+        &mut self,
+        ui: &mut Ui,
+        kind: TriggerKind,
+        mut filter: AbilityFilter,
+        busy: bool,
+    ) {
+        crate::theme::section_heading(ui, "Ability filter");
+        ui.add(egui::Label::new(
+            egui::RichText::new("Choose which abilities this trigger fires for.")
+                .size(crate::theme::SIZE_META)
+                .color(crate::theme::TEXT_MUTED),
+        ));
+        ui.add_space(crate::theme::SPACE_SM);
+
+        // Deadlock heroes have four ability slots; always offer those even
+        // before a live game has reported anything, plus any extra slot the
+        // catalog has seen (e.g. items), so the filter is usable offline.
+        let mut slots: BTreeSet<u32> = (1..=4).collect();
+        slots.extend(self.ability_catalog.keys().copied());
+        let names = self.ability_catalog.clone();
+
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.horizontal(|ui| {
+                if crate::theme::button_secondary(ui, "All").clicked() {
+                    filter = AbilityFilter::All;
+                }
+                if crate::theme::button_secondary(ui, "None").clicked() {
+                    filter = AbilityFilter::Selected(BTreeSet::new());
+                }
+            });
+            ui.add_space(crate::theme::SPACE_SM);
+            ui.columns(2, |columns| {
+                for (index, &slot) in slots.iter().enumerate() {
+                    let ui = &mut columns[index % 2];
+                    let label = names
+                        .get(&slot)
+                        .and_then(Option::as_deref)
+                        .map(|name| format!("Slot {slot}: {name}"))
+                        .unwrap_or_else(|| format!("Slot {slot}"));
+                    let mut selected = filter.accepts(slot);
+                    if crate::theme::checkbox_row(ui, &mut selected, &label, None).changed() {
+                        if matches!(filter, AbilityFilter::All) {
+                            let selected_slots: BTreeSet<u32> = slots
+                                .iter()
+                                .copied()
+                                .filter(|candidate| *candidate != slot)
+                                .collect();
+                            filter = AbilityFilter::Selected(selected_slots);
+                        } else if let AbilityFilter::Selected(selected_slots) = &mut filter {
+                            if selected {
+                                selected_slots.insert(slot);
+                            } else {
+                                selected_slots.remove(&slot);
+                            }
+                        }
+                    }
+                    ui.add_space(crate::theme::SPACE_XS);
+                }
+            });
+        });
+
+        if matches!(&filter, AbilityFilter::Selected(selected) if selected.is_empty()) {
+            ui.add_space(crate::theme::SPACE_XS);
+            notice_line(
+                ui,
+                "No abilities are selected; this trigger will not send an action.",
+                crate::theme::WARNING,
+            );
+        }
+        if self.ability_catalog.is_empty() {
+            ui.add_space(crate::theme::SPACE_XS);
+            ui.add(egui::Label::new(
+                egui::RichText::new("Using numbered slots until the game reports ability names.")
+                    .size(crate::theme::SIZE_META)
+                    .color(crate::theme::TEXT_MUTED),
+            ));
+        }
+
+        if let Some(stored) = self.triggers.ability_filter_mut(kind) {
+            *stored = filter;
+        }
+    }
+
+    /// A full-width row, visually distinct from normal configuration
+    /// controls, that immediately stops the toy.
+    fn draw_emergency_stop(&mut self, ui: &mut Ui) {
+        let desired = egui::vec2(ui.available_width(), 52.0);
+        let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+        let painter = ui.painter();
+        let fill = if response.hovered() {
+            crate::theme::ACCENT_PINK_BRIGHT
+        } else {
+            crate::theme::ACCENT_PINK_BRIGHT.gamma_multiply(0.85)
+        };
+        painter.rect_filled(
+            rect,
+            egui::CornerRadius::same(crate::theme::RADIUS_MD),
+            fill,
+        );
+        let text_pos = rect.left_center() + egui::vec2(16.0, -7.0);
+        painter.text(
+            crate::theme::glyph_center(text_pos, 15.0),
+            egui::Align2::LEFT_CENTER,
+            "Emergency stop",
+            egui::FontId::new(15.0, crate::theme::heading_family()),
+            Color32::WHITE,
+        );
+        let sub_pos = rect.left_center() + egui::vec2(16.0, 12.0);
+        painter.text(
+            crate::theme::glyph_center(sub_pos, 12.0),
+            egui::Align2::LEFT_CENTER,
+            "Stop all vibration immediately",
+            egui::FontId::proportional(12.0),
+            Color32::from_rgba_unmultiplied(255, 255, 255, 210),
+        );
+        let chevron_pos = rect.right_center() - egui::vec2(16.0, 0.0);
+        painter.text(
+            crate::theme::glyph_center(chevron_pos, 16.0),
+            egui::Align2::RIGHT_CENTER,
+            egui_phosphor::regular::CARET_RIGHT,
+            egui::FontId::proportional(16.0),
+            Color32::WHITE,
+        );
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            self.force_stop_toy("manual_emergency_stop");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // UI: Setup page
+    // -----------------------------------------------------------------
+
+    fn draw_setup(&mut self, ui: &mut Ui, busy: bool) {
+        Self::page_header(
+            ui,
+            "Setup",
+            "Connect Lovelock to your Lovense toy.",
+            |_ui| None,
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("setup-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                crate::theme::surface(ui).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Label::new(
+                            crate::theme::heading_text(
+                                "Lovense connection",
+                                crate::theme::SIZE_SECTION_TITLE,
+                            )
+                            .color(crate::theme::TEXT_PRIMARY),
+                        ));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            status_dot_label(
+                                ui,
+                                self.credential_state.label(),
+                                self.credential_state.tone().color(),
+                            );
+                        });
+                    });
+                    ui.add_space(crate::theme::SPACE_SM);
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("Domain")
+                            .size(crate::theme::SIZE_CONTROL_LABEL)
+                            .color(crate::theme::TEXT_PRIMARY),
+                    ));
+                    let mut credentials_changed = ui
+                        .add(
+                            TextEdit::singleline(&mut self.provider_settings.lovense.domain)
+                                .background_color(crate::theme::INPUT_BG)
+                                .font(egui::FontId::proportional(16.0))
+                                // Matches the DragValue's button_padding below,
+                                // so the two fields line up visually.
+                                .margin(egui::Margin::symmetric(12, 7))
+                                .desired_width(160.0),
+                        )
+                        .changed();
+                    ui.add_space(crate::theme::SPACE_SM);
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("HTTP port")
+                            .size(crate::theme::SIZE_CONTROL_LABEL)
+                            .color(crate::theme::TEXT_PRIMARY),
+                    ));
+                    // A plain string buffer (not the model's `u16` directly)
+                    // so it renders identically to the Domain field above -
+                    // same widget, same left-aligned text, same box. Only
+                    // resynced from the model while unfocused, so a string
+                    // round-trip through a freshly-formatted value doesn't
+                    // snap back to the last valid port on every keystroke
+                    // that doesn't parse yet (e.g. while clearing the field
+                    // to type a new one).
+                    let port_field_id = egui::Id::new("http_port_input");
+                    if !ui.memory(|memory| memory.has_focus(port_field_id)) {
+                        self.port_input = self.provider_settings.lovense.http_port.to_string();
+                    }
+                    let port_response = ui.add(
+                        TextEdit::singleline(&mut self.port_input)
+                            .id(port_field_id)
+                            .background_color(crate::theme::INPUT_BG)
+                            .font(egui::FontId::proportional(16.0))
+                            .margin(egui::Margin::symmetric(12, 7))
+                            .desired_width(160.0),
+                    );
+                    if port_response.changed()
+                        && let Ok(parsed) = self.port_input.trim().parse()
+                    {
+                        self.provider_settings.lovense.http_port = parsed;
+                        credentials_changed = true;
+                    }
+                    ui.add_space(crate::theme::SPACE_MD);
+                    ui.horizontal(|ui| {
+                        let connect_button = egui::Button::new(
+                            egui::RichText::new("Connect")
+                                .size(17.0)
+                                .color(Color32::WHITE),
+                        )
+                        .fill(crate::theme::ACCENT_PINK_BRIGHT)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_SM))
+                        .min_size(egui::vec2(0.0, 40.0));
+                        ui.spacing_mut().button_padding = egui::vec2(22.0, 10.0);
+                        if ui.add_enabled(!busy, connect_button).clicked() {
+                            self.start_connection_test(ui.ctx().clone());
+                        }
+                        if let Some(error) = &self.connection_error {
+                            notice_line(ui, error, crate::theme::DANGER);
+                        }
+                    });
+                    if credentials_changed {
+                        log::info!(target: "companion::debug", "credentials_changed_reset_fired");
+                        self.reset_connection();
+                    }
+                });
+
+                ui.add_space(crate::theme::SPACE_LG);
+
+                crate::theme::surface(ui).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Label::new(
+                            crate::theme::heading_text("Toy", crate::theme::SIZE_SECTION_TITLE)
+                                .color(crate::theme::TEXT_PRIMARY),
+                        ));
+                    });
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("Pick the toy Lovelock should drive.")
+                            .size(crate::theme::SIZE_META)
+                            .color(crate::theme::TEXT_MUTED),
+                    ));
+                    ui.add_space(crate::theme::SPACE_MD);
+                    if self.devices.is_empty() {
+                        egui::Frame::NONE
+                            .fill(crate::theme::INPUT_BG)
+                            .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
+                            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_MD))
+                            .inner_margin(egui::Margin::symmetric(16, 22))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.vertical_centered(|ui| {
+                                    crate::theme::icon_badge(
+                                        ui,
+                                        egui_phosphor::regular::HEART,
+                                        crate::theme::IconTone::Off,
+                                        44.0,
+                                    );
+                                    ui.add_space(crate::theme::SPACE_SM);
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new("No toys yet")
+                                            .size(crate::theme::SIZE_CONTROL_LABEL)
+                                            .color(crate::theme::TEXT_PRIMARY),
+                                    ));
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(
+                                            "Connect above, then your toys will show up here.",
+                                        )
+                                        .size(crate::theme::SIZE_META)
+                                        .color(crate::theme::TEXT_MUTED),
+                                    ));
+                                });
+                            });
+                    } else {
+                        let selected_id = self.selected_device.clone();
+                        let mut pick = None;
+                        for device in &self.devices {
+                            let is_selected = selected_id.as_ref() == Some(device.id());
+                            let frame = if is_selected {
+                                crate::theme::surface_selected(ui)
+                            } else {
+                                crate::theme::surface(ui)
+                            }
+                            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_MD));
+                            let card = frame.show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    crate::theme::icon_badge(
+                                        ui,
+                                        egui_phosphor::regular::HEART,
+                                        if is_selected {
+                                            crate::theme::IconTone::Selected
+                                        } else {
+                                            crate::theme::IconTone::On
+                                        },
+                                        38.0,
+                                    );
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                        ui.add(egui::Label::new(
+                                            egui::RichText::new(device.name())
+                                                .size(15.0)
+                                                .color(crate::theme::TEXT_PRIMARY),
+                                        ));
+                                        ui.add(egui::Label::new(
+                                            egui::RichText::new(format!("ID {}", device.id()))
+                                                .size(crate::theme::SIZE_META)
+                                                .color(crate::theme::TEXT_MUTED),
+                                        ));
+                                    });
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if !device.connected() {
+                                                ui.label(
+                                                    egui::RichText::new("Offline")
+                                                        .size(crate::theme::SIZE_META)
+                                                        .color(egui::Color32::from_rgb(
+                                                            0xE5, 0x48, 0x4D,
+                                                        )),
+                                                );
+                                            } else if is_selected
+                                                && let Some(battery) = device
+                                                    .battery()
+                                                    .filter(|level| (0..=100).contains(level))
+                                            {
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "{battery}% battery"
+                                                    ))
+                                                    .size(crate::theme::SIZE_META)
+                                                    .color(crate::theme::TEXT_SECONDARY),
+                                                );
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                            let click = ui.interact(
+                                card.response.rect,
+                                ui.id().with(("toy_card", device.id())),
+                                egui::Sense::click(),
+                            );
+                            if click.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if click.clicked() {
+                                pick = Some(device.id().clone());
+                            }
+                            ui.add_space(crate::theme::SPACE_SM);
+                        }
+                        if let Some(target) = pick {
+                            self.select_device(target);
+                        }
+                    }
+                    ui.add_space(crate::theme::SPACE_SM);
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(!busy && self.client.is_some(), |ui| {
+                            if crate::theme::button_secondary(
+                                ui,
+                                &format!(
+                                    "{} Refresh toys",
+                                    egui_phosphor::regular::ARROWS_CLOCKWISE
+                                ),
+                            )
+                            .clicked()
+                            {
+                                self.start_device_refresh(ui.ctx().clone());
+                            }
+                            if crate::theme::button_primary(
+                                ui,
+                                &format!("{} Test vibration", egui_phosphor::regular::LIGHTNING),
+                            )
+                            .clicked()
+                            {
+                                self.start_test_action(ui.ctx().clone());
+                            }
+                        });
+                    });
+                    if let Some(status) = &self.test_action_status {
+                        ui.add_space(crate::theme::SPACE_XS);
+                        notice_line(ui, status.label(), status.tone().color());
+                    }
+                });
+
+                ui.add_space(crate::theme::SPACE_LG);
+
+                crate::theme::surface(ui).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(
+                        crate::theme::heading_text(
+                            "Resting vibration",
+                            crate::theme::SIZE_SECTION_TITLE,
+                        )
+                        .color(crate::theme::TEXT_PRIMARY),
+                    ));
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("A baseline level the toy holds between triggers.")
+                            .size(crate::theme::SIZE_META)
+                            .color(crate::theme::TEXT_MUTED),
+                    ));
+                    ui.add_space(crate::theme::SPACE_SM);
+                    ui.horizontal(|ui| {
+                        let mut enabled = self.resting_enabled;
+                        if crate::theme::toggle(ui, &mut enabled).changed() {
+                            self.resting_enabled = enabled;
+                        }
+                        ui.label(
+                            egui::RichText::new(if enabled { "On" } else { "Off" })
+                                .color(crate::theme::TEXT_SECONDARY),
+                        );
+                    });
+                    ui.add_space(crate::theme::SPACE_SM);
+                    ui.add_enabled_ui(self.resting_enabled, |ui| {
+                        let mut strength = self.resting_strength as f32;
+                        if crate::theme::labeled_slider(
+                            ui,
+                            "Baseline strength",
+                            &mut strength,
+                            0.0..=20.0,
+                            1.0,
+                            |v| format!("{v:.0} / 20"),
+                        )
+                        .changed()
+                        {
+                            self.resting_strength = strength.round().clamp(0.0, 20.0) as u8;
+                        }
+                    });
+                });
+            });
+    }
+
+    // -----------------------------------------------------------------
+    // UI: Game connection page
+    // -----------------------------------------------------------------
+
+    fn draw_game_connection(&mut self, ui: &mut Ui) {
+        Self::page_header(
+            ui,
+            "Game connection",
+            "Point Lovelock at Deadlock's console.log so it can see gameplay events.",
+            |_ui| None,
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("game-connection-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                crate::theme::surface(ui).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.colored_label(
+                            crate::theme::ACCENT_PINK,
+                            egui_phosphor::regular::PLUGS_CONNECTED,
+                        );
+                        ui.add(egui::Label::new(
+                            crate::theme::heading_text(
+                                "Game connection",
+                                crate::theme::SIZE_SECTION_TITLE,
+                            )
+                            .color(crate::theme::TEXT_PRIMARY),
+                        ));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let status = listener_status_text(&self.bridge_listener.status());
+                            crate::theme::badge(ui, &status.0, status.1);
+                        });
+                    });
+                    ui.add_space(crate::theme::SPACE_SM);
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("console.log path")
+                            .size(crate::theme::SIZE_CONTROL_LABEL)
+                            .color(crate::theme::TEXT_PRIMARY),
+                    ));
+                    ui.add(
+                        TextEdit::singleline(&mut self.log_path)
+                            .background_color(crate::theme::INPUT_BG)
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(crate::theme::SPACE_MD);
+                    ui.horizontal(|ui| {
+                        if crate::theme::button_secondary(ui, "Start listener").clicked() {
+                            self.start_listener_from_input();
+                        }
+                        if crate::theme::button_secondary(ui, "Auto-detect").clicked() {
+                            self.auto_detect_log_path();
+                        }
+                    });
+                    if let Some(status) = &self.log_detection_status {
+                        ui.add_space(crate::theme::SPACE_SM);
+                        notice_line(ui, status.label(), status.tone().color());
+                    }
+                    if let Some(error) = &self.listener_action_error {
+                        notice_line(ui, error, crate::theme::DANGER);
+                    }
+                });
+
+                ui.add_space(crate::theme::SPACE_LG);
+
+                crate::theme::surface(ui).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(
+                        crate::theme::heading_text("Activity", crate::theme::SIZE_SECTION_TITLE)
+                            .color(crate::theme::TEXT_PRIMARY),
+                    ));
+                    ui.add_space(crate::theme::SPACE_SM);
+                    draw_listener_activity(
+                        ui,
+                        &self.bridge_listener.status(),
+                        self.last_bridge_event.as_ref(),
+                    );
+                    if let Some(status) = &self.action_status {
+                        ui.add_space(crate::theme::SPACE_SM);
+                        notice_line(ui, &status.label(), to_color(status.color()));
+                    } else {
+                        ui.add(egui::Label::new(
+                            egui::RichText::new("Last action delivery: none since startup.")
+                                .size(crate::theme::SIZE_META)
+                                .color(crate::theme::TEXT_MUTED),
+                        ));
+                    }
+                });
+            });
+    }
+
+    // -----------------------------------------------------------------
+    // UI: Donate page
+    // -----------------------------------------------------------------
+
+    fn draw_donate(ui: &mut Ui) {
+        Self::page_header(
+            ui,
+            "Donate",
+            "Support the people who make Lovelock possible.",
+            |_ui| None,
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("donate-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    crate::theme::surface(ui)
+                        .inner_margin(egui::Margin::symmetric(72, 64))
+                        .show(ui, |ui| {
+                            ui.set_width(760.0);
+                            ui.vertical_centered(|ui| {
+                                ui.colored_label(
+                                    crate::theme::ACCENT_PINK,
+                                    egui::RichText::new(egui_phosphor::regular::HEART).size(40.0),
+                                );
+                                ui.add_space(crate::theme::SPACE_MD);
+                                ui.add(egui::Label::new(
+                                    crate::theme::heading_text(
+                                        "Enjoying Lovelock Companion?",
+                                        crate::theme::SIZE_PAGE_TITLE,
+                                    )
+                                    .color(crate::theme::TEXT_PRIMARY),
+                                ));
+                                ui.add_space(crate::theme::SPACE_SM);
+                                ui.add(egui::Label::new(
+                                    egui::RichText::new(
+                                        "Donations help keep this project maintained and updated.",
+                                    )
+                                    .size(crate::theme::SIZE_BODY)
+                                    .color(crate::theme::TEXT_SECONDARY),
+                                ));
+                                ui.add_space(crate::theme::SPACE_XL);
+                                if crate::theme::button_primary(ui, "Donate on Ko-fi").clicked() {
+                                    ui.ctx().open_url(egui::OpenUrl::new_tab(KOFI_URL));
+                                }
+                                ui.add_space(crate::theme::SPACE_XS);
+                                ui.hyperlink_to(KOFI_URL, KOFI_URL);
+                            });
+                        });
+                });
+            });
+    }
 }
 
 /// How often `draw` rebuilds the full [`PersistedState`] to feed the autosave
@@ -2580,6 +3837,16 @@ pub struct CompanionApp {
     version_check: VersionCheckOwner,
     version_warnings: WarningSelection,
     log_store: LogStore,
+    /// UI-only maintenance/window state, all reachable from the title bar's
+    /// settings menu.
+    settings_menu_open: bool,
+    reset_confirmation: bool,
+    menu_error: Option<String>,
+    logs_window_open: bool,
+    logs_cached_revision: u64,
+    logs_cached_text: String,
+    logo_texture: Option<egui::TextureHandle>,
+    credits_window_open: bool,
 }
 
 impl CompanionApp {
@@ -2657,13 +3924,27 @@ impl CompanionApp {
             version_check: VersionCheckOwner::with_client(LATEST_RELEASE_URL, None),
             version_warnings: WarningSelection::default(),
             log_store,
+            settings_menu_open: false,
+            reset_confirmation: false,
+            menu_error: None,
+            logs_window_open: false,
+            logs_cached_revision: 0,
+            logs_cached_text: String::new(),
+            logo_texture: None,
+            credits_window_open: false,
         }
     }
 
-    /// Frontend is being rebuilt from scratch (see `new-ui` branch); this
-    /// keeps the non-UI per-frame bookkeeping (version check polling,
-    /// autosave debouncing) running headlessly until new drawing code lands.
     pub fn draw(&mut self, ui: &mut Ui) {
+        self.state.poll_test_action();
+        self.state.poll_connection_test();
+        self.state.poll_device_refresh();
+        self.state.ensure_bridge_subscription();
+        self.state.poll_bridge_events();
+        self.state.poll_action();
+        self.state.poll_resting();
+        self.state.maintain_resting();
+
         self.version_check.poll();
         let listener_status = self.state.bridge_listener.status();
         let remote = match &self.version_check.state {
@@ -2674,11 +3955,92 @@ impl CompanionApp {
         self.version_warnings =
             select_warnings(&app_version(), &listener_status.mod_version, remote);
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.label("UI under reconstruction.");
-        });
+        draw_resize_borders(ui.ctx());
+        self.draw_title_bar(ui);
+
+        let listener_silent = listener_status
+            .silent_since_attach()
+            .is_some_and(|silent| silent >= LISTENER_SILENCE_HINT_AFTER);
+        if self.persistence.load_warning().is_some()
+            || self.persistence.save_error().is_some()
+            || self.menu_error.is_some()
+            || self.has_update_warning()
+            || listener_silent
+        {
+            egui::Panel::top("notices")
+                .frame(
+                    egui::Frame::NONE
+                        .fill(crate::theme::APP_BG)
+                        .inner_margin(egui::Margin::symmetric(
+                            crate::theme::PAGE_PADDING as i8,
+                            8,
+                        )),
+                )
+                .show(ui, |ui| {
+                    if let Some(warning) = self.persistence.load_warning() {
+                        notice_line(ui, warning, crate::theme::WARNING);
+                    }
+                    if let Some(error) = self.persistence.save_error() {
+                        notice_line(ui, error, crate::theme::DANGER);
+                    }
+                    if let Some(error) = &self.menu_error {
+                        notice_line(ui, error, crate::theme::DANGER);
+                    }
+                    if listener_silent {
+                        notice_line(
+                            ui,
+                            "No data from Deadlock yet. Add -condebug to the game's Steam launch options, then restart it.",
+                            crate::theme::WARNING,
+                        );
+                    }
+                    self.draw_update_panel(ui);
+                });
+        }
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(crate::theme::APP_BG))
+            .show(ui, |ui| {
+                egui::Panel::left("app_nav_sidebar")
+                    .resizable(false)
+                    .exact_size(196.0)
+                    .frame(
+                        egui::Frame::NONE
+                            .fill(crate::theme::SIDEBAR_BG)
+                            .inner_margin(egui::Margin {
+                                left: crate::theme::SIDEBAR_PADDING as i8,
+                                right: crate::theme::SIDEBAR_PADDING as i8,
+                                top: 28,
+                                bottom: 16,
+                            }),
+                    )
+                    .show(ui, |ui| {
+                        self.state.draw_sidebar(ui);
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                            ui.add_space(4.0);
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(format!("Lovelock v{}", app_version()))
+                                    .size(crate::theme::SIZE_META)
+                                    .color(crate::theme::TEXT_MUTED),
+                            ));
+                        });
+                    });
+                let busy = self.state.is_busy();
+                egui::Frame::NONE
+                    .inner_margin(crate::theme::PAGE_PADDING)
+                    .show(ui, |ui| match self.state.selected_section {
+                        AppSection::Setup => self.state.draw_setup(ui, busy),
+                        AppSection::Effects => self.state.draw_effects(ui, busy),
+                        AppSection::GameConnection => self.state.draw_game_connection(ui),
+                        AppSection::Donate => AppState::draw_donate(ui),
+                    });
+            });
 
         let ctx = ui.ctx().clone();
+        self.draw_settings_menu(&ctx);
+        self.draw_reset_confirmation(&ctx);
+        self.draw_logs_window(&ctx);
+        self.draw_credits_window(&ctx);
+
         let now = Instant::now();
         if now.saturating_duration_since(self.last_autosave_check) >= AUTOSAVE_CHECK_INTERVAL {
             self.last_autosave_check = now;
@@ -2694,14 +4056,365 @@ impl CompanionApp {
         if self.version_check.is_checking() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
+        // The baseline is sent from `draw`, which egui only runs on a repaint,
+        // so keep ticking while a device is connected or the resting send and
+        // its heartbeat would wait for the next mouse movement.
+        if self.state.client.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
     }
 
-    #[allow(dead_code)]
     fn has_update_warning(&self) -> bool {
         self.version_warnings.companion_outdated.is_some()
             || self.version_warnings.mod_outdated.is_some()
             || self.version_warnings.mod_legacy
             || self.version_warnings.mod_invalid
+    }
+
+    /// A compact custom title bar (~52px): the Lovelock wordmark on the
+    /// left, the version pill, settings gear, and window controls on the
+    /// right. The window has no OS decorations, so this also owns dragging
+    /// and the double-click-to-maximize gesture.
+    fn draw_title_bar(&mut self, ui: &mut Ui) {
+        let bar_height = 52.0;
+        egui::Panel::top("title_bar")
+            .exact_size(bar_height)
+            .frame(
+                egui::Frame::NONE
+                    .fill(crate::theme::SIDEBAR_BG)
+                    .inner_margin(egui::Margin::symmetric(16, 0)),
+            )
+            .show(ui, |ui| {
+                let ctx = ui.ctx().clone();
+                let bar_rect = ui.max_rect();
+                // The panel's own margin already insets this from the window
+                // edge by 16px; shrink it further so the drag-to-move region
+                // never reaches into the corner resize handles (see
+                // `RESIZE_CORNER`), which would otherwise compete with them
+                // for the same click.
+                let drag_rect = bar_rect.shrink2(egui::vec2((RESIZE_CORNER - 16.0).max(0.0), 0.0));
+                ui.horizontal_centered(|ui| {
+                    let drag_response = ui.interact(
+                        drag_rect,
+                        ui.id().with("title_bar_drag"),
+                        egui::Sense::click_and_drag(),
+                    );
+                    if drag_response.drag_started() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
+                    if drag_response.double_clicked() {
+                        let maximized =
+                            ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                    }
+
+                    if self.logo_texture.is_none() {
+                        let image = image::load_from_memory_with_format(
+                            include_bytes!("../assets/logo.png"),
+                            image::ImageFormat::Png,
+                        )
+                        .expect("logo.png must be a valid PNG")
+                        .into_rgba8();
+                        let size = [image.width() as usize, image.height() as usize];
+                        self.logo_texture = Some(ui.ctx().load_texture(
+                            "lovelock-logo",
+                            egui::ColorImage::from_rgba_unmultiplied(size, &image.into_raw()),
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+
+                    let title = "Lovelock Companion";
+                    let title_font = egui::FontId::new(16.0, crate::theme::heading_family());
+                    let title_w = ui
+                        .painter()
+                        .layout_no_wrap(title.to_owned(), title_font, crate::theme::TEXT_PRIMARY)
+                        .size()
+                        .x;
+                    let logo_size = 22.0;
+                    let gap = 8.0;
+                    let group_w = logo_size + gap + title_w;
+                    let group_rect = egui::Rect::from_min_size(
+                        bar_rect.left_center() - egui::vec2(0.0, bar_rect.height() / 2.0),
+                        egui::vec2(group_w, bar_rect.height()),
+                    );
+                    let logo_texture = self.logo_texture.clone();
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(group_rect)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            if let Some(logo) = &logo_texture {
+                                ui.add(
+                                    egui::Image::new(egui::load::SizedTexture::from_handle(logo))
+                                        .fit_to_exact_size(egui::Vec2::splat(logo_size)),
+                                );
+                            }
+                            ui.add_space(gap);
+                            ui.label(crate::theme::heading_text(title, 16.0));
+                        },
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let icon_button = |ui: &mut Ui, glyph: &str| -> egui::Response {
+                            let response = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new(glyph).color(crate::theme::TEXT_SECONDARY),
+                                )
+                                .frame(false),
+                            );
+                            if response.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            response
+                        };
+                        if icon_button(ui, egui_phosphor::regular::X).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if icon_button(ui, egui_phosphor::regular::SQUARE).clicked() {
+                            let maximized =
+                                ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                        if icon_button(ui, egui_phosphor::regular::MINUS).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        ui.add_space(4.0);
+                        title_bar_separator(ui);
+                        ui.add_space(4.0);
+                        if icon_button(ui, egui_phosphor::regular::GEAR_SIX).clicked() {
+                            self.settings_menu_open = !self.settings_menu_open;
+                        }
+                        ui.add_space(8.0);
+                        if self.state.client.is_some() {
+                            status_dot_label(
+                                ui,
+                                "Connected",
+                                crate::theme::BadgeTone::Success.color(),
+                            );
+                        } else {
+                            status_dot_label(
+                                ui,
+                                "Not connected",
+                                egui::Color32::from_rgb(0xE5, 0x48, 0x4D),
+                            );
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Small floating menu opened from the title bar's gear button: the
+    /// maintenance actions that don't belong on any content page.
+    fn draw_settings_menu(&mut self, ctx: &egui::Context) {
+        if !self.settings_menu_open {
+            return;
+        }
+        let mut still_open = true;
+        egui::Window::new("settings_menu")
+            .id(egui::Id::new("settings_menu"))
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 58.0))
+            .frame(
+                egui::Frame::window(&ctx.style_of(egui::Theme::Dark))
+                    .fill(crate::theme::SURFACE_1)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
+                    .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_MD))
+                    .inner_margin(8.0),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(200.0);
+                if crate::theme::button_ghost(ui, "Open config folder").clicked() {
+                    self.menu_error = self.persistence.open_config_directory().err();
+                    still_open = false;
+                }
+                if crate::theme::button_ghost(ui, "View logs").clicked() {
+                    self.logs_window_open = true;
+                    still_open = false;
+                }
+                if crate::theme::button_ghost(ui, "Credits").clicked() {
+                    self.credits_window_open = true;
+                    still_open = false;
+                }
+                crate::theme::divider(ui);
+                if crate::theme::button_danger(ui, "Reset all settings").clicked() {
+                    self.reset_confirmation = true;
+                    still_open = false;
+                }
+            });
+        self.settings_menu_open = still_open;
+    }
+
+    fn draw_logs_window(&mut self, ctx: &egui::Context) {
+        if !self.logs_window_open {
+            return;
+        }
+
+        let revision = self.log_store.revision();
+        if revision != self.logs_cached_revision {
+            let snapshot: LogSnapshot = self.log_store.snapshot();
+            self.logs_cached_revision = snapshot.revision;
+            self.logs_cached_text = snapshot.text;
+        }
+        ctx.request_repaint_after(Duration::from_millis(250));
+
+        let mut open = self.logs_window_open;
+        themed_window(
+            ctx,
+            "Logs",
+            "Logs",
+            egui_phosphor::regular::FILE_TEXT,
+            &mut open,
+            true,
+            |ui| {
+                if crate::theme::button_secondary(ui, "Copy all").clicked() {
+                    ctx.copy_text(self.logs_cached_text.clone());
+                }
+                ui.add_space(crate::theme::SPACE_SM);
+                if self.logs_cached_text.is_empty() {
+                    ui.label("No log records have been captured yet.");
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&self.logs_cached_text).monospace(),
+                            )
+                            .selectable(true),
+                        );
+                    });
+            },
+        );
+        self.logs_window_open = open;
+    }
+
+    fn draw_credits_window(&mut self, ctx: &egui::Context) {
+        if !self.credits_window_open {
+            return;
+        }
+
+        let mut open = true;
+        themed_window(
+            ctx,
+            "Credits",
+            "Credits",
+            egui_phosphor::regular::INFO,
+            &mut open,
+            false,
+            |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        crate::theme::ACCENT_PINK,
+                        egui::RichText::new(egui_phosphor::regular::HEART).size(28.0),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(crate::theme::heading_text("volc", 16.0));
+                    ui.label(
+                        "A HUGE THANK YOU to volc for DeadlockShock, the mod this companion is built on.",
+                    );
+                    ui.add_space(12.0);
+                    ui.label(crate::theme::heading_text("KaufkinNova", 16.0));
+                    ui.label("A HUGE THANK YOU to KaufkinNova for the idea and for sponsoring this mod.");
+                    ui.add_space(4.0);
+                });
+            },
+        );
+        self.credits_window_open = open;
+    }
+
+    fn draw_update_panel(&self, ui: &mut Ui) {
+        let has_warning = self.version_warnings.companion_outdated.is_some()
+            || self.version_warnings.mod_outdated.is_some()
+            || self.version_warnings.mod_legacy
+            || self.version_warnings.mod_invalid;
+        if !has_warning {
+            return;
+        }
+        ui.add(egui::Label::new(
+            egui::RichText::new("Updates available")
+                .size(crate::theme::SIZE_CONTROL_LABEL)
+                .color(crate::theme::TEXT_PRIMARY),
+        ));
+        if let Some(target) = &self.version_warnings.companion_outdated {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Companion {} is older than {}.",
+                    app_version(),
+                    target
+                ));
+                ui.hyperlink_to("Download companion", COMPANION_RELEASE_URL);
+            });
+        }
+        if let Some((installed, target)) = &self.version_warnings.mod_outdated {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "DeadlockShock mod {} is older than {}.",
+                    installed, target
+                ));
+                ui.hyperlink_to("Update mod", MOD_RELEASE_URL);
+            });
+        } else if self.version_warnings.mod_legacy {
+            ui.horizontal(|ui| {
+                ui.label("The last observed DeadlockShock mod predates version reporting.");
+                ui.hyperlink_to("Update mod", MOD_RELEASE_URL);
+            });
+        } else if self.version_warnings.mod_invalid {
+            ui.horizontal(|ui| {
+                ui.label("The last observed DeadlockShock mod reported an invalid version; reinstall the latest mod.");
+                ui.hyperlink_to("Update mod", MOD_RELEASE_URL);
+            });
+        }
+    }
+
+    fn draw_reset_confirmation(&mut self, ctx: &egui::Context) {
+        if !self.reset_confirmation {
+            return;
+        }
+
+        let mut open = true;
+        let mut confirm = false;
+        let mut cancel = false;
+        let reset_available = !self.state.is_busy();
+        themed_window(
+            ctx,
+            "Reset saved state?",
+            "Reset saved state?",
+            egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
+            &mut open,
+            false,
+            |ui| {
+                ui.label(
+                    "This clears saved provider setup, target preference, trigger action settings, and log path.",
+                );
+                ui.label("Any active log listener will be stopped.");
+                if !reset_available {
+                    notice_line(
+                        ui,
+                        "Wait for connection, test action, and action work to finish.",
+                        crate::theme::WARNING,
+                    );
+                }
+                ui.add_space(crate::theme::SPACE_SM);
+                ui.horizontal(|ui| {
+                    if crate::theme::button_secondary(ui, "Cancel").clicked() {
+                        cancel = true;
+                    }
+                    ui.add_enabled_ui(reset_available, |ui| {
+                        if crate::theme::button_danger(ui, "Reset").clicked() {
+                            confirm = true;
+                        }
+                    });
+                });
+            },
+        );
+        self.reset_confirmation = open && !cancel;
+        if confirm && self.reset_and_save() {
+            self.reset_confirmation = false;
+        }
     }
 
     pub fn flush_pending(&mut self) {
@@ -2759,15 +4472,769 @@ fn first_copy_source(destination: TriggerKind) -> TriggerKind {
     }
 }
 
+fn trigger_display_label(kind: TriggerKind) -> &'static str {
+    match kind {
+        TriggerKind::Death => "Death",
+        TriggerKind::Kill => "Kill",
+        TriggerKind::Assist => "Assist",
+        TriggerKind::AbilityUse => "Ability use",
+        TriggerKind::AbilityCooldownReady => "Cooldown ready",
+        TriggerKind::DamageTaken => "Damage taken",
+        TriggerKind::HealingReceived => "Healing received",
+        TriggerKind::AllyHealed => "Healed an ally",
+        TriggerKind::AllyShielded => "Shielded an ally",
+        TriggerKind::DamageGiven => "Damage dealt",
+        TriggerKind::SoulDeny => "Soul orb deny",
+        TriggerKind::SoulSecure => "Soul orb secure",
+        TriggerKind::ParrySuccess => "Parry success",
+        TriggerKind::ParryFail => "Got parried",
+        TriggerKind::ObjectiveGuardian => "Guardian destroyed",
+        TriggerKind::ObjectiveWalker => "Walker destroyed",
+        TriggerKind::ObjectiveBaseGuardian => "Base Guardian destroyed",
+        TriggerKind::ObjectiveShrine => "Shrine destroyed",
+        TriggerKind::ObjectivePatronWeakened => "Patron weakened",
+        TriggerKind::GameWon => "Game won",
+        TriggerKind::DamageTakenIntensity => "Damage intensity",
+    }
+}
+
+/// Icon glyph for a trigger kind, used by both the trigger list rows and the
+/// inspector header. Same bounding box, same weight everywhere via
+/// [`crate::theme::icon_badge`].
+fn trigger_icon(kind: TriggerKind) -> &'static str {
+    match kind {
+        TriggerKind::Death => egui_phosphor::regular::SKULL,
+        TriggerKind::Kill => egui_phosphor::regular::SWORD,
+        TriggerKind::Assist => egui_phosphor::regular::HANDSHAKE,
+        TriggerKind::AbilityUse => egui_phosphor::regular::MAGIC_WAND,
+        TriggerKind::AbilityCooldownReady => egui_phosphor::regular::HOURGLASS_SIMPLE,
+        TriggerKind::DamageTaken => egui_phosphor::regular::SHIELD_SLASH,
+        TriggerKind::HealingReceived => egui_phosphor::regular::HEART_STRAIGHT,
+        TriggerKind::AllyHealed => egui_phosphor::regular::HAND_HEART,
+        TriggerKind::AllyShielded => egui_phosphor::regular::SHIELD_PLUS,
+        TriggerKind::DamageGiven => egui_phosphor::regular::CROSSHAIR,
+        TriggerKind::SoulDeny => egui_phosphor::regular::PROHIBIT,
+        TriggerKind::SoulSecure => egui_phosphor::regular::COINS,
+        TriggerKind::ParrySuccess => egui_phosphor::regular::SHIELD_CHECK,
+        TriggerKind::ParryFail => egui_phosphor::regular::SHIELD_WARNING,
+        TriggerKind::ObjectiveGuardian => egui_phosphor::regular::CASTLE_TURRET,
+        TriggerKind::ObjectiveWalker => egui_phosphor::regular::ROBOT,
+        TriggerKind::ObjectiveBaseGuardian => egui_phosphor::regular::CASTLE_TURRET,
+        TriggerKind::ObjectiveShrine => egui_phosphor::regular::CASTLE_TURRET,
+        TriggerKind::ObjectivePatronWeakened => egui_phosphor::regular::CROWN_SIMPLE,
+        TriggerKind::GameWon => egui_phosphor::regular::TROPHY,
+        TriggerKind::DamageTakenIntensity => egui_phosphor::regular::WARNING_OCTAGON,
+    }
+}
+
+/// A short one-line summary of a trigger's configured effect, for the
+/// trigger list row. Amount-stream triggers (damage/healing curves) get
+/// their curve summary; everything else gets its vibrate settings summary.
+fn trigger_summary(triggers: &TriggerSettingsSet, kind: TriggerKind) -> String {
+    if let Some(curve) = triggers.amount_curve(kind) {
+        curve.summary_with_noun(kind.intensity_noun())
+    } else {
+        triggers.get(kind).actions.summary()
+    }
+}
+
+/// How long the listener can go without a single byte before the "no data
+/// from Deadlock" hint appears - long enough that a load screen or a menu
+/// doesn't falsely trip it.
+const LISTENER_SILENCE_HINT_AFTER: Duration = Duration::from_secs(25);
+
+/// Width of the invisible corner resize handles the borderless window
+/// paints over itself (see [`draw_resize_borders`]). The title bar's own
+/// whole-bar drag-to-move region is inset by this much on each side so it
+/// never competes with the corner handles for the same click.
+const RESIZE_CORNER: f32 = 22.0;
+
+const KOFI_URL: &str = "https://ko-fi.com/asteriaxo";
+
+/// Short status text + tone for the game connection page's header badge.
+fn listener_status_text(status: &ListenerStatus) -> (String, crate::theme::BadgeTone) {
+    let looks_silent = status
+        .silent_since_attach()
+        .is_some_and(|silent| silent >= LISTENER_SILENCE_HINT_AFTER);
+    match status.phase {
+        ListenerPhase::Stopped => ("Stopped".to_owned(), crate::theme::BadgeTone::Neutral),
+        ListenerPhase::WaitingForFile => (
+            "Waiting for file".to_owned(),
+            crate::theme::BadgeTone::Warning,
+        ),
+        ListenerPhase::Listening if looks_silent => (
+            "No data arriving".to_owned(),
+            crate::theme::BadgeTone::Warning,
+        ),
+        ListenerPhase::Listening => ("Listening".to_owned(), crate::theme::BadgeTone::Success),
+        ListenerPhase::Failed => (
+            status
+                .current_error
+                .clone()
+                .unwrap_or_else(|| "Failed".to_owned()),
+            crate::theme::BadgeTone::Danger,
+        ),
+    }
+}
+
+/// The activity page's log/event history: last log activity, last bridge
+/// event, and a silence hint if Deadlock does not appear to be writing to
+/// console.log at all.
+fn draw_listener_activity(ui: &mut Ui, status: &ListenerStatus, last_event: Option<&BridgeEvent>) {
+    let looks_silent = status
+        .silent_since_attach()
+        .is_some_and(|silent| silent >= LISTENER_SILENCE_HINT_AFTER);
+    if let Some(path) = &status.configured_path {
+        ui.add(egui::Label::new(
+            egui::RichText::new(format!("Configured listener path: {}", path.display()))
+                .size(crate::theme::SIZE_META)
+                .color(crate::theme::TEXT_MUTED),
+        ));
+    }
+    if looks_silent {
+        notice_line(
+            ui,
+            "Deadlock is not writing to console.log. Open Steam, right click Deadlock, choose Properties, add -condebug to the launch options, then restart the game.",
+            crate::theme::WARNING,
+        );
+    }
+    let activity = status
+        .last_activity_at
+        .map(|at| format!("Last log activity: {} ago.", format_duration(at.elapsed())))
+        .unwrap_or_else(|| "Last log activity: none since listener start.".to_owned());
+    ui.add(egui::Label::new(
+        egui::RichText::new(activity)
+            .size(crate::theme::SIZE_BODY)
+            .color(crate::theme::TEXT_SECONDARY),
+    ));
+    let event = match (last_event, status.last_event_at) {
+        (Some(event), Some(at)) => format!(
+            "Last bridge event: {} ({} ago).",
+            bridge_event_description(event),
+            format_duration(at.elapsed())
+        ),
+        _ => "Last bridge event: none since listener start.".to_owned(),
+    };
+    ui.add(egui::Label::new(
+        egui::RichText::new(event)
+            .size(crate::theme::SIZE_BODY)
+            .color(crate::theme::TEXT_SECONDARY),
+    ));
+}
+
+fn bridge_event_description(event: &BridgeEvent) -> String {
+    let ability_description = |name: &str, ability: &AbilityTrigger| {
+        let ability_name = ability
+            .ability_name
+            .as_deref()
+            .map(|name| format!(" ({name})"))
+            .unwrap_or_default();
+        let charges = match (ability.charges_before, ability.charges_after) {
+            (Some(before), Some(after)) => format!(", charges {before}→{after}"),
+            _ => String::new(),
+        };
+        format!(
+            "{name}, slot {}{ability_name}, detection {}{charges}",
+            ability.ability_slot, ability.detection
+        )
+    };
+    let count_description = |count: &CountTrigger| {
+        let counts = match (count.count_before, count.count_after) {
+            (Some(before), Some(after)) => format!(", count {before}→{after}"),
+            _ => String::new(),
+        };
+        format!("detection {}{counts}", count.detection)
+    };
+    match event {
+        BridgeEvent::HookReady(_)
+        | BridgeEvent::LocalPlayerDeath(_)
+        | BridgeEvent::LocalPlayerRespawn(_) => event.event_name().to_owned(),
+        BridgeEvent::AbilityCatalog(catalog) => {
+            format!("ability_catalog, {} slot(s)", catalog.abilities.len())
+        }
+        BridgeEvent::LocalPlayerKill(count) => {
+            format!("local_player_kill, {}", count_description(count))
+        }
+        BridgeEvent::LocalPlayerAssist(count) => {
+            format!("local_player_assist, {}", count_description(count))
+        }
+        BridgeEvent::AllyHealed(count) => {
+            format!("ally_healed, {}", count_description(count))
+        }
+        BridgeEvent::AllyShielded(count) => {
+            format!("ally_shielded, {}", count_description(count))
+        }
+        BridgeEvent::AbilityUsed(ability) => ability_description("ability_used", ability),
+        BridgeEvent::AbilityCooldownReady(ability) => {
+            ability_description("ability_cooldown_ready", ability)
+        }
+        BridgeEvent::DamageTaken(vitals) => {
+            format!(
+                "damage_taken, {:.0} lost, detection {}",
+                vitals.amount, vitals.detection
+            )
+        }
+        BridgeEvent::HealingReceived(vitals) => {
+            format!(
+                "healing_received, {:.0} restored, detection {}",
+                vitals.amount, vitals.detection
+            )
+        }
+        BridgeEvent::DamageGiven(vitals) => {
+            format!(
+                "damage_given, {:.0} dealt, detection {}",
+                vitals.amount, vitals.detection
+            )
+        }
+        BridgeEvent::SoulDeny(count) => format!("soul_deny, {}", count_description(count)),
+        BridgeEvent::SoulSecure(count) => format!("soul_secure, {}", count_description(count)),
+        BridgeEvent::ParrySuccess(count) => format!("parry_success, {}", count_description(count)),
+        BridgeEvent::ParryFail(count) => format!("parry_fail, {}", count_description(count)),
+        BridgeEvent::ObjectiveGuardian(count) => {
+            format!("objective_guardian, {}", count_description(count))
+        }
+        BridgeEvent::ObjectiveWalker(count) => {
+            format!("objective_walker, {}", count_description(count))
+        }
+        BridgeEvent::ObjectiveBaseGuardian(count) => {
+            format!("objective_base_guardian, {}", count_description(count))
+        }
+        BridgeEvent::ObjectiveShrine(count) => {
+            format!("objective_shrine, {}", count_description(count))
+        }
+        BridgeEvent::ObjectivePatronWeakened(count) => {
+            format!("objective_patron_weakened, {}", count_description(count))
+        }
+        BridgeEvent::GameWon(count) => format!("game_won, {}", count_description(count)),
+        BridgeEvent::DamageTakenIntensity(count) => {
+            format!("damage_taken_intensity, {}", count_description(count))
+        }
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+fn to_color(color: [f32; 4]) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        (color[0].clamp(0.0, 1.0) * 255.0) as u8,
+        (color[1].clamp(0.0, 1.0) * 255.0) as u8,
+        (color[2].clamp(0.0, 1.0) * 255.0) as u8,
+        (color[3].clamp(0.0, 1.0) * 255.0) as u8,
+    )
+}
+
+/// Small status readout: a colored dot followed by plain text.
+fn status_dot_label(ui: &mut Ui, text: &str, color: Color32) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        ui.painter().circle_filled(dot.center(), 4.0, color);
+        ui.label(
+            egui::RichText::new(text)
+                .size(crate::theme::SIZE_BODY)
+                .color(crate::theme::TEXT_SECONDARY),
+        );
+    });
+}
+
+fn notice_line(ui: &mut Ui, value: &str, color: Color32) {
+    ui.colored_label(color, value);
+}
+
+/// A vertical hairline, used to separate clusters of icon buttons in the
+/// title bar.
+fn title_bar_separator(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 20.0), egui::Sense::hover());
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE),
+    );
+}
+
+/// The window has no OS decorations (custom title bar instead), so there is
+/// no native edge-drag resize affordance. This paints invisible drag strips
+/// along the screen edges/corners that issue `BeginResize` to the backend.
+fn draw_resize_borders(ctx: &egui::Context) {
+    let screen = ctx.input(|i| i.viewport_rect());
+    if !screen.is_positive() {
+        return;
+    }
+
+    // Wide enough to reliably grab with a real mouse (a few-pixel strip is
+    // an easy miss, especially at non-100% display scaling).
+    let border = 10.0;
+    let corner = RESIZE_CORNER;
+    let zones: [(egui::Rect, egui::CursorIcon, egui::ResizeDirection); 8] = [
+        (
+            egui::Rect::from_min_size(screen.left_top(), egui::vec2(corner, corner)),
+            egui::CursorIcon::ResizeNorthWest,
+            egui::ResizeDirection::NorthWest,
+        ),
+        (
+            egui::Rect::from_min_size(
+                egui::pos2(screen.right() - corner, screen.top()),
+                egui::vec2(corner, corner),
+            ),
+            egui::CursorIcon::ResizeNorthEast,
+            egui::ResizeDirection::NorthEast,
+        ),
+        (
+            egui::Rect::from_min_size(
+                egui::pos2(screen.left(), screen.bottom() - corner),
+                egui::vec2(corner, corner),
+            ),
+            egui::CursorIcon::ResizeSouthWest,
+            egui::ResizeDirection::SouthWest,
+        ),
+        (
+            egui::Rect::from_min_size(
+                egui::pos2(screen.right() - corner, screen.bottom() - corner),
+                egui::vec2(corner, corner),
+            ),
+            egui::CursorIcon::ResizeSouthEast,
+            egui::ResizeDirection::SouthEast,
+        ),
+        (
+            egui::Rect::from_min_size(
+                egui::pos2(screen.left(), screen.top() + corner),
+                egui::vec2(border, (screen.height() - 2.0 * corner).max(0.0)),
+            ),
+            egui::CursorIcon::ResizeWest,
+            egui::ResizeDirection::West,
+        ),
+        (
+            egui::Rect::from_min_size(
+                egui::pos2(screen.right() - border, screen.top() + corner),
+                egui::vec2(border, (screen.height() - 2.0 * corner).max(0.0)),
+            ),
+            egui::CursorIcon::ResizeEast,
+            egui::ResizeDirection::East,
+        ),
+        (
+            egui::Rect::from_min_size(
+                egui::pos2(screen.left() + corner, screen.top()),
+                egui::vec2((screen.width() - 2.0 * corner).max(0.0), border),
+            ),
+            egui::CursorIcon::ResizeNorth,
+            egui::ResizeDirection::North,
+        ),
+        (
+            egui::Rect::from_min_size(
+                egui::pos2(screen.left() + corner, screen.bottom() - border),
+                egui::vec2((screen.width() - 2.0 * corner).max(0.0), border),
+            ),
+            egui::CursorIcon::ResizeSouth,
+            egui::ResizeDirection::South,
+        ),
+    ];
+
+    egui::Area::new(egui::Id::new("resize_borders"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            for (index, (rect, cursor, direction)) in zones.into_iter().enumerate() {
+                if !rect.is_positive() {
+                    continue;
+                }
+                let id = ui.id().with(("resize_zone", index));
+                let response = ui.interact(rect, id, egui::Sense::click_and_drag());
+                if response.hovered() || response.dragged() {
+                    ui.ctx().set_cursor_icon(cursor);
+                }
+                if response.drag_started() {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                }
+            }
+        });
+}
+
+/// Curve points lock to multiples of this so dragging is easy to land.
+const DAMAGE_SNAP: f32 = 50.0;
+
+fn snap_damage(damage: f32) -> f32 {
+    (damage / DAMAGE_SNAP).round() * DAMAGE_SNAP
+}
+
+/// The intensity curve as a draggable graph: damage/healing/damage-dealt on
+/// the x-axis, vibration strength on the y-axis. Drag a dot to reshape the
+/// curve, double-click empty graph space to add a point, right-click a dot
+/// to remove it (while more than two remain). Returns whether the curve
+/// changed this frame.
+fn draw_curve_graph(ui: &mut Ui, curve: &mut IntensityCurve, x_noun: &str) -> bool {
+    use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Vec2, pos2};
+
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 228.0), Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+
+    // Plot area, leaving room for axis labels and, below those, the
+    // "<noun> in window" caption so the two rows of text don't collide.
+    let plot = Rect::from_min_max(
+        pos2(rect.left() + 46.0, rect.top() + 8.0),
+        pos2(rect.right() - 12.0, rect.bottom() - 34.0),
+    );
+
+    let last_damage = curve
+        .points
+        .last()
+        .map(|p| p.damage)
+        .unwrap_or(500.0)
+        .max(100.0);
+    let x_max = ((last_damage * 1.35 / 100.0).ceil() * 100.0).clamp(200.0, MAX_INTENSITY_DAMAGE);
+    let y_max = MAX_VIBRATE_STRENGTH;
+
+    let to_screen = |damage: f32, level: f32| -> Pos2 {
+        let tx = (damage / x_max).clamp(0.0, 1.0);
+        let ty = (level / y_max).clamp(0.0, 1.0);
+        pos2(
+            plot.left() + tx * plot.width(),
+            plot.bottom() - ty * plot.height(),
+        )
+    };
+    let from_screen = |pos: Pos2| -> (f32, f32) {
+        let tx = ((pos.x - plot.left()) / plot.width()).clamp(0.0, 1.0);
+        let ty = ((plot.bottom() - pos.y) / plot.height()).clamp(0.0, 1.0);
+        (tx * x_max, ty * y_max)
+    };
+
+    painter.rect_filled(rect, 8.0, crate::theme::SURFACE_1);
+    painter.rect_stroke(
+        plot,
+        0.0,
+        Stroke::new(1.0, crate::theme::BORDER_SUBTLE),
+        egui::StrokeKind::Inside,
+    );
+
+    let label_font = FontId::proportional(11.0);
+    // Y grid + labels (level).
+    for level in [0.0_f32, 5.0, 10.0, 15.0, 20.0] {
+        let y = to_screen(0.0, level).y;
+        painter.line_segment(
+            [pos2(plot.left(), y), pos2(plot.right(), y)],
+            Stroke::new(1.0, crate::theme::BORDER_SUBTLE.gamma_multiply(0.5)),
+        );
+        painter.text(
+            pos2(plot.left() - 6.0, y),
+            Align2::RIGHT_CENTER,
+            format!("{level:.0}"),
+            label_font.clone(),
+            crate::theme::TEXT_MUTED,
+        );
+    }
+    // X grid + labels (damage).
+    for step in 0..=4 {
+        let damage = x_max * step as f32 / 4.0;
+        let x = to_screen(damage, 0.0).x;
+        painter.line_segment(
+            [pos2(x, plot.top()), pos2(x, plot.bottom())],
+            Stroke::new(1.0, crate::theme::BORDER_SUBTLE.gamma_multiply(0.5)),
+        );
+        painter.text(
+            pos2(x, plot.bottom() + 6.0),
+            Align2::CENTER_TOP,
+            format!("{damage:.0}"),
+            label_font.clone(),
+            crate::theme::TEXT_MUTED,
+        );
+    }
+    painter.text(
+        pos2(plot.center().x, rect.bottom() - 2.0),
+        Align2::CENTER_BOTTOM,
+        format!("{x_noun} in window"),
+        label_font.clone(),
+        crate::theme::TEXT_MUTED,
+    );
+
+    // The eased curve, sampled across the plot width, with a soft fill under it.
+    let samples = 96usize;
+    let mut line: Vec<Pos2> = Vec::with_capacity(samples + 1);
+    for i in 0..=samples {
+        let damage = x_max * i as f32 / samples as f32;
+        line.push(to_screen(damage, curve.level_at(damage)));
+    }
+    if line.len() >= 2 {
+        // Fill one trapezoid per sample segment rather than one polygon for
+        // the whole curve: a dip (a point lower than its neighbours) makes
+        // the traced outline concave, and `convex_polygon`'s fan
+        // triangulation mis-fills concave outlines (straight-line artifacts
+        // cutting across the dip instead of following it). Each segment's
+        // trapezoid is convex on its own regardless of curve shape, so the
+        // fill always hugs the actual sampled curve, dips included.
+        for pair in line.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            painter.add(egui::Shape::convex_polygon(
+                vec![a, b, pos2(b.x, plot.bottom()), pos2(a.x, plot.bottom())],
+                crate::theme::ACCENT_PINK.gamma_multiply(0.14),
+                Stroke::NONE,
+            ));
+        }
+        painter.add(egui::Shape::line(
+            line.clone(),
+            Stroke::new(2.0, crate::theme::ACCENT_PINK),
+        ));
+    }
+
+    // Drag state: which point index (if any) this graph is currently moving.
+    let drag_id = response.id.with("dragging_point");
+    let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_id));
+    let pointer = response
+        .hover_pos()
+        .or_else(|| response.interact_pointer_pos());
+
+    if response.drag_started() {
+        dragging = pointer.and_then(|p| {
+            curve
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, pt)| (i, to_screen(pt.damage, pt.level).distance(p)))
+                .filter(|(_, dist)| *dist <= 14.0)
+                .min_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)))
+                .map(|(i, _)| i)
+        });
+        ui.data_mut(|d| d.insert_temp(drag_id, dragging.unwrap_or(usize::MAX)));
+    }
+    if dragging == Some(usize::MAX) {
+        dragging = None;
+    }
+
+    let mut changed = false;
+    if let (Some(index), Some(pos)) = (dragging, pointer)
+        && response.dragged()
+        && index < curve.points.len()
+    {
+        let (mut damage, level) = from_screen(pos);
+        let low = if index == 0 {
+            0.0
+        } else {
+            curve.points[index - 1].damage + DAMAGE_SNAP
+        };
+        let high = if index + 1 == curve.points.len() {
+            MAX_INTENSITY_DAMAGE
+        } else {
+            curve.points[index + 1].damage - DAMAGE_SNAP
+        };
+        damage = damage.clamp(low.min(high), high.max(low));
+        curve.points[index].damage = snap_damage(damage);
+        curve.points[index].level = level.round().clamp(0.0, y_max);
+        changed = true;
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<usize>(drag_id));
+    }
+
+    // Double-click to add a point; right-click a point to remove it.
+    if response.double_clicked()
+        && let Some(pos) = pointer
+        && plot.contains(pos)
+        && curve.points.len() < IntensityCurve::MAX_POINTS
+    {
+        let (damage, level) = from_screen(pos);
+        curve.points.push(IntensityPoint {
+            damage: snap_damage(damage),
+            level: level.round().clamp(0.0, y_max),
+        });
+        changed = true;
+    }
+    // Right-click a dot to remove it (while more than two remain); right-click
+    // empty graph space to add a new point there.
+    if response.secondary_clicked()
+        && let Some(pos) = pointer
+    {
+        let nearest = curve
+            .points
+            .iter()
+            .enumerate()
+            .map(|(i, pt)| (i, to_screen(pt.damage, pt.level).distance(pos)))
+            .filter(|(_, dist)| *dist <= 14.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((index, _)) = nearest {
+            if curve.points.len() > 2 {
+                curve.points.remove(index);
+                changed = true;
+            }
+        } else if plot.contains(pos) && curve.points.len() < IntensityCurve::MAX_POINTS {
+            let (damage, level) = from_screen(pos);
+            let damage = snap_damage(damage);
+            if !curve.points.iter().any(|pt| pt.damage == damage) {
+                curve.points.push(IntensityPoint {
+                    damage,
+                    level: level.round().clamp(0.0, y_max),
+                });
+                changed = true;
+            }
+        }
+    }
+
+    // Click a dot to pin its damage/strength readout; click empty space (or
+    // remove the point) to clear it.
+    let selected_id = response.id.with("selected_point");
+    let mut selected: Option<usize> = ui
+        .data(|d| d.get_temp::<usize>(selected_id))
+        .filter(|&i| i < curve.points.len());
+    if let Some(index) = dragging {
+        selected = Some(index);
+    }
+    if response.clicked()
+        && let Some(pos) = pointer
+    {
+        selected = curve
+            .points
+            .iter()
+            .enumerate()
+            .map(|(i, pt)| (i, to_screen(pt.damage, pt.level).distance(pos)))
+            .filter(|(_, dist)| *dist <= 14.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i);
+    }
+    if response.secondary_clicked() {
+        selected = None;
+    }
+    if let Some(index) = selected
+        && curve.points.len() > 2
+        && ui.input(|input| {
+            input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace)
+        })
+    {
+        curve.points.remove(index);
+        selected = None;
+        changed = true;
+    }
+    ui.data_mut(|d| match selected {
+        Some(i) => {
+            d.insert_temp(selected_id, i);
+        }
+        None => d.remove::<usize>(selected_id),
+    });
+
+    // Dots on top.
+    for (i, point) in curve.points.iter().enumerate() {
+        let center = to_screen(point.damage, point.level);
+        let hot =
+            dragging == Some(i) || pointer.map(|p| center.distance(p) <= 14.0).unwrap_or(false);
+        painter.circle_filled(
+            center,
+            if hot { 7.0 } else { 5.5 },
+            if hot {
+                crate::theme::ACCENT_PINK_BRIGHT
+            } else {
+                crate::theme::ACCENT_PINK
+            },
+        );
+        painter.circle_stroke(center, 6.0, Stroke::new(1.5, crate::theme::SURFACE_1));
+        if selected == Some(i) {
+            painter.circle_stroke(center, 10.0, Stroke::new(1.5, crate::theme::ACCENT_SOFT));
+            let text = format!(
+                "{:.0} {x_noun} -> strength {:.0}",
+                point.damage, point.level
+            );
+            let font = FontId::proportional(12.0);
+            let galley = painter.layout_no_wrap(text, font, crate::theme::TEXT_PRIMARY);
+            let size = galley.size() + Vec2::new(14.0, 8.0);
+            let mut top_left = pos2(center.x - size.x / 2.0, center.y - 16.0 - size.y);
+            if top_left.y < plot.top() {
+                top_left.y = center.y + 16.0;
+            }
+            top_left.x = top_left
+                .x
+                .clamp(plot.left(), (plot.right() - size.x).max(plot.left()));
+            let tag = Rect::from_min_size(top_left, size);
+            painter.galley(
+                tag.min + Vec2::new(7.0, 4.0),
+                galley,
+                crate::theme::TEXT_PRIMARY,
+            );
+        }
+    }
+
+    // Live readout: where the pointer sits maps to this damage -> level.
+    if dragging.is_none()
+        && let Some(pos) = pointer
+        && plot.contains(pos)
+    {
+        let (damage, _) = from_screen(pos);
+        // The hover readout snaps to the same 50-step grid the dots lock to.
+        let damage = snap_damage(damage).min(x_max);
+        let level = curve.level_for(damage);
+        let marker = to_screen(damage, curve.level_at(damage));
+        painter.line_segment(
+            [pos2(marker.x, plot.top()), pos2(marker.x, plot.bottom())],
+            Stroke::new(1.0, crate::theme::ACCENT_PINK.gamma_multiply(0.5)),
+        );
+        painter.circle_filled(marker, 3.5, crate::theme::ACCENT_PINK_BRIGHT);
+        painter.text(
+            pos2(marker.x + 8.0, marker.y - 8.0),
+            Align2::LEFT_BOTTOM,
+            format!("{damage:.0} {x_noun} -> {level}"),
+            FontId::proportional(12.0),
+            crate::theme::TEXT_PRIMARY,
+        );
+    }
+
+    changed
+}
+
+/// A borderless floating window matching the app's surfaces, with a small
+/// heading row (icon + title + close button) instead of egui's default
+/// title bar.
+fn themed_window(
+    ctx: &egui::Context,
+    id_source: &str,
+    title: &str,
+    icon: &str,
+    open: &mut bool,
+    resizable: bool,
+    add_contents: impl FnOnce(&mut Ui),
+) {
+    let mut still_open = true;
+    egui::Window::new(id_source)
+        .id(egui::Id::new(id_source))
+        .title_bar(false)
+        .resizable(resizable)
+        .collapsible(false)
+        .frame(
+            egui::Frame::window(&ctx.style_of(egui::Theme::Dark))
+                .fill(crate::theme::SURFACE_1)
+                .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_SUBTLE))
+                .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_LG)),
+        )
+        .show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            ui.horizontal(|ui| {
+                ui.colored_label(crate::theme::ACCENT_PINK, icon);
+                ui.label(crate::theme::heading_text(title, 17.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(egui_phosphor::regular::X).frame(false))
+                        .clicked()
+                    {
+                        still_open = false;
+                    }
+                });
+            });
+            crate::theme::divider(ui);
+            add_contents(ui);
+        });
+    *open = still_open;
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::action::VibrateMode;
-    use crate::logging::CapturingWriter;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use std::io::Write;
 
     fn trigger(kind: TriggerKind, session_id: &str, sequence: u64) -> TriggerIdentity {
         let is_ability = matches!(
@@ -3593,7 +6060,10 @@ mod tests {
         // second sample clearing 150 pulses - on healing's own ledger, not the
         // damage one that already fired.
         state.evaluate_amount_intensity(TriggerKind::HealingReceived, &vitals(120.0, 2));
-        assert!(state.action_status.is_none(), "120 healing is below the curve");
+        assert!(
+            state.action_status.is_none(),
+            "120 healing is below the curve"
+        );
         state.evaluate_amount_intensity(TriggerKind::HealingReceived, &vitals(60.0, 3));
         assert!(
             state.action_status.is_some(),
@@ -3653,10 +6123,21 @@ mod tests {
 
         state.add_blank_profile(); // fresh second profile, now active
         assert_eq!(state.active_profile, 1);
-        assert!(!state.triggers.kill.enabled, "a fresh profile starts from defaults");
-        assert!(state.triggers.death.enabled, "a fresh profile has the death effect on");
         assert!(
-            state.triggers.death.actions.resolve().is_some_and(|a| a.strength > 0),
+            !state.triggers.kill.enabled,
+            "a fresh profile starts from defaults"
+        );
+        assert!(
+            state.triggers.death.enabled,
+            "a fresh profile has the death effect on"
+        );
+        assert!(
+            state
+                .triggers
+                .death
+                .actions
+                .resolve()
+                .is_some_and(|a| a.strength > 0),
             "a fresh profile's death effect is actually felt, not a silent zero"
         );
         assert_eq!(state.resting_strength, 0);
@@ -3665,7 +6146,10 @@ mod tests {
 
         state.switch_profile(0);
         assert_eq!(state.active_profile, 0);
-        assert!(state.triggers.kill.enabled, "first profile's effects came back");
+        assert!(
+            state.triggers.kill.enabled,
+            "first profile's effects came back"
+        );
         assert_eq!(state.resting_strength, 6);
 
         state.switch_profile(1);
@@ -3681,7 +6165,10 @@ mod tests {
         state.triggers.assist.enabled = true; // profile 0 "Default"
 
         state.duplicate_profile(0); // profile 1: a copy, now active
-        assert!(state.triggers.assist.enabled, "the copy started from the source's effects");
+        assert!(
+            state.triggers.assist.enabled,
+            "the copy started from the source's effects"
+        );
         state.triggers.assist.enabled = false; // edit only the copy
 
         state.add_blank_profile(); // profile 2: fresh, now active
@@ -3713,7 +6200,11 @@ mod tests {
         state.add_blank_profile();
         assert_eq!(state.profiles.len(), 2);
         assert_eq!(state.active_profile, 1);
-        assert_eq!(state.renaming_profile, Some(1), "the new chip is being renamed");
+        assert_eq!(
+            state.renaming_profile,
+            Some(1),
+            "the new chip is being renamed"
+        );
         assert!(state.renaming_needs_focus);
 
         // Committing a blank name falls back to a fresh unique placeholder.
@@ -3785,7 +6276,10 @@ mod tests {
             .unwrap();
         state.poll_device_refresh();
         assert!(state.device_refresh_result.is_none());
-        assert_eq!(state.devices, vec![ProviderTarget::new("fresh-toy", "Fresh")]);
+        assert_eq!(
+            state.devices,
+            vec![ProviderTarget::new("fresh-toy", "Fresh")]
+        );
         assert_eq!(state.selected_device, Some("fresh-toy".to_owned()));
     }
 

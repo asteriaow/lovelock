@@ -927,7 +927,10 @@
     var combatPollCounter = 0;
     var damageGivenSeen = [];       // [{panel, value}] running per-number tallies
     var damageGivenPending = 0;
+    var labelKindCache = [];        // [{panel, category}] classified feedback labels
     var damageGivenFlushAt = 0;
+    var damageDiagBudget = 30;
+    var damageDiagPanels = [];
 
     var parryCdWas = false;
     var parryResolveAt = 0;
@@ -1019,6 +1022,7 @@
     function resetCombatState() {
         combatPollCounter = 0;
         damageGivenSeen = [];
+        labelKindCache = [];
         damageGivenPending = 0;
         damageGivenFlushAt = 0;
         parryCdWas = false;
@@ -1152,6 +1156,13 @@
             }
         }
         damageGivenSeen = keptDamage;
+        var keptKinds = [];
+        for (var k = 0; k < labelKindCache.length; k++) {
+            if (isValidPanel(labelKindCache[k].panel)) {
+                keptKinds.push(labelKindCache[k]);
+            }
+        }
+        labelKindCache = keptKinds;
 
         var labels = findChildrenWithClass(root, FEEDBACK_LABEL_CLASS);
         var scanned = Math.min(labels.length, FEEDBACK_LABEL_SCAN_CAP);
@@ -1160,7 +1171,29 @@
             if (!isValidPanel(label)) {
                 continue;
             }
-            var category = feedbackCategory(label);
+            // A label's category is fixed for its lifetime, and classifying it
+            // climbs several parents with a class probe at each, so it is done
+            // once per label rather than on every poll of a busy team fight.
+            var category = null;
+            for (var c = 0; c < labelKindCache.length; c++) {
+                if (labelKindCache[c].panel === label) {
+                    category = labelKindCache[c].category;
+                    break;
+                }
+            }
+            if (category === null) {
+                category = feedbackCategory(label);
+                labelKindCache.push({ panel: label, category: category });
+            }
+            if (damageDiagBudget > 0 && damageDiagPanels.indexOf(label) === -1) {
+                damageDiagBudget--;
+                damageDiagPanels.push(label);
+                emit("damage_feedback_diag", {
+                    kind: category.kind,
+                    text: panelProperty(label, "text"),
+                    parent_classes: indicatorClassList(panelParent(label))
+                });
+            }
 
             // A heal number is not damage you dealt; skip it. Anything without
             // a damage_type class (xp, mana burn, status text) is skipped too.
@@ -1283,20 +1316,17 @@
     var objectiveAliveState = {};   // full id -> last-seen `.Alive` boolean
     var objectivesBaselined = false;
     var gameWonEmitted = false;
-    var objHealthType = null;       // type the boss bar is currently showing
-    var objHealthDeadEmitted = false;
-    var objHealthWeakenedEmitted = false;
+    var objHealthTracked = [];      // [{panel, sig, dead, weakened}] per objective_health panel
     var creditedObjectiveFeedPanels = []; // feed rows already handled (rows fade + tear down)
     var recentObjectiveEmits = {};        // objective event name -> last emit Date.now()
+    var feedDiagBudget = 20;
 
     function resetObjectiveState() {
         objectivePollCounter = 0;
         objectiveAliveState = {};
         objectivesBaselined = false;
         gameWonEmitted = false;
-        objHealthType = null;
-        objHealthDeadEmitted = false;
-        objHealthWeakenedEmitted = false;
+        objHealthTracked = [];
         creditedObjectiveFeedPanels = [];
         recentObjectiveEmits = {};
     }
@@ -1350,51 +1380,142 @@
         }
     }
 
+    var OBJECTIVE_HEALTH_PROBES = [
+        "is_active", "is_dead", "is_weakened", "is_titan", "is_barracks_boss",
+        "is_shield_generator", "is_tier1", "is_tier2", "is_mid", "friend",
+        "team1", "team2"
+    ];
+    var objHealthDiagBudget = 40;
+
+    // The team layout builds several objective_health panels (per team and per
+    // structure group), most of them idle, so every one is checked and tracked
+    // on its own. A state class may sit on the panel itself or on a child, so
+    // the panel is tried first and its subtree second.
+    function objHasClass(w, className) {
+        return panelHasClass(w, className)
+            || findChildrenWithClass(w, className).length > 0;
+    }
+
     function objectiveHealthType(w) {
-        if (panelHasClass(w, "is_barracks_boss")) { return "base_guardian"; }
-        if (panelHasClass(w, "is_shield_generator")) { return "shrine"; }
-        if (panelHasClass(w, "is_titan")) { return "titan"; }
-        if (panelHasClass(w, "is_tier1")) { return "guardian"; }
-        if (panelHasClass(w, "is_tier2")) { return "walker"; }
+        var types = [
+            ["is_barracks_boss", "base_guardian"],
+            ["is_shield_generator", "shrine"],
+            ["is_titan", "titan"],
+            ["is_tier1", "guardian"],
+            ["is_tier2", "walker"]
+        ];
+        var i;
+        for (i = 0; i < types.length; i++) {
+            if (panelHasClass(w, types[i][0])) { return types[i][1]; }
+        }
+        for (i = 0; i < types.length; i++) {
+            if (findChildrenWithClass(w, types[i][0]).length > 0) { return types[i][1]; }
+        }
         return null; // mid boss / neutral / nothing shown
     }
 
-    function pollObjectiveHealth(root) {
-        var matches = findChildrenWithClass(root, OBJECTIVE_HEALTH_CLASS);
-        var w = matches.length > 0 ? matches[0] : null;
-        if (!isValidPanel(w)) {
-            objHealthType = null;
-            return;
-        }
-        var type = objectiveHealthType(w);
-        if (type !== objHealthType) {
-            objHealthType = type;
-            objHealthDeadEmitted = false;
-            objHealthWeakenedEmitted = false;
-        }
-        if (type === null || anyAncestorHasClass(w, "friend", 3)) {
-            return; // nothing shown, or it is a friendly objective
-        }
-        if (!objHealthWeakenedEmitted && type === "titan"
-            && panelHasClass(w, "is_weakened")) {
-            objHealthWeakenedEmitted = true;
-            emitAction("objective_patron_weakened", {
-                detection: "objective_health:is_titan+is_weakened"
-            });
-        }
-        if (!objHealthDeadEmitted && panelHasClass(w, "is_dead")) {
-            if (type === "base_guardian") {
-                objHealthDeadEmitted = true;
-                emitObjectiveDeduped("objective_base_guardian", {
-                    detection: "objective_health:is_barracks_boss+is_dead"
-                });
-            } else if (type === "shrine") {
-                objHealthDeadEmitted = true;
-                emitObjectiveDeduped("objective_shrine", {
-                    detection: "objective_health:is_shield_generator+is_dead"
-                });
+    function objectiveHealthSignature(w) {
+        var hit = [];
+        for (var i = 0; i < OBJECTIVE_HEALTH_PROBES.length; i++) {
+            if (objHasClass(w, OBJECTIVE_HEALTH_PROBES[i])) {
+                hit.push(OBJECTIVE_HEALTH_PROBES[i]);
             }
         }
+        return hit.join(" ");
+    }
+
+    // Native panel reads are the expensive part of Panorama script work, so
+    // each panel's type and team are resolved once and cached (they never
+    // change for a given panel), an untyped panel is only re-examined every
+    // OBJECTIVE_TYPE_RECHECK_POLLS objective polls, and the shape dump is
+    // rate-limited per panel.
+    var OBJECTIVE_TYPE_RECHECK_POLLS = 10; // ~5s at the objective cadence
+    var OBJECTIVE_DIAG_MIN_MS = 3000;
+
+    function pollObjectiveHealth(root) {
+        var matches = findChildrenWithClass(root, OBJECTIVE_HEALTH_CLASS);
+        objHealthTracked = prunedValidPanelEntries(objHealthTracked);
+        var now = Date.now();
+        for (var m = 0; m < matches.length; m++) {
+            var w = matches[m];
+            if (!isValidPanel(w)) {
+                continue;
+            }
+            var entry = null;
+            for (var t = 0; t < objHealthTracked.length; t++) {
+                if (objHealthTracked[t].panel === w) {
+                    entry = objHealthTracked[t];
+                    break;
+                }
+            }
+            if (!entry) {
+                entry = {
+                    panel: w, type: null, friendly: false, polls: 0,
+                    sig: "", sigAt: 0, dead: false, weakened: false
+                };
+                objHealthTracked.push(entry);
+            }
+
+            if (entry.type === null) {
+                entry.polls++;
+                if (entry.polls % OBJECTIVE_TYPE_RECHECK_POLLS !== 1) {
+                    continue;
+                }
+                entry.type = objectiveHealthType(w);
+                if (entry.type === null) {
+                    continue; // mid boss / neutral / nothing shown yet
+                }
+                entry.friendly = anyAncestorHasClass(w, "friend", 6);
+            }
+
+            // Shape dump: log a typed panel's class set when it changes, so a
+            // missed objective can be tuned from console.log.
+            if (objHealthDiagBudget > 0 && now - entry.sigAt >= OBJECTIVE_DIAG_MIN_MS) {
+                entry.sigAt = now;
+                var sig = objectiveHealthSignature(w);
+                if (sig !== entry.sig) {
+                    entry.sig = sig;
+                    objHealthDiagBudget--;
+                    emit("objective_health_diag", {
+                        type: entry.type,
+                        friendly: entry.friendly,
+                        classes: sig
+                    });
+                }
+            }
+            if (entry.friendly) {
+                continue; // a friendly objective
+            }
+            if (!entry.weakened && entry.type === "titan" && objHasClass(w, "is_weakened")) {
+                entry.weakened = true;
+                emitObjectiveDeduped("objective_patron_weakened", {
+                    detection: "objective_health:is_titan+is_weakened"
+                });
+            }
+            if (!entry.dead && objHasClass(w, "is_dead")) {
+                if (entry.type === "base_guardian") {
+                    entry.dead = true;
+                    emitObjectiveDeduped("objective_base_guardian", {
+                        detection: "objective_health:is_barracks_boss+is_dead"
+                    });
+                } else if (entry.type === "shrine") {
+                    entry.dead = true;
+                    emitObjectiveDeduped("objective_shrine", {
+                        detection: "objective_health:is_shield_generator+is_dead"
+                    });
+                }
+            }
+        }
+    }
+
+    function prunedValidPanelEntries(entries) {
+        var kept = [];
+        for (var i = 0; i < entries.length; i++) {
+            if (isValidPanel(entries[i].panel)) {
+                kept.push(entries[i]);
+            }
+        }
+        return kept;
     }
 
     // The direct children of #ObjectivesFeed that are boss/structure kill rows
@@ -1525,6 +1646,15 @@
                 continue; // the mid boss is not one of the objective triggers
             }
             if (objectiveFeedKillerSide(row, friendlyTeam) !== "friend") {
+                if (feedDiagBudget > 0) {
+                    feedDiagBudget--;
+                    emit("objective_feed_diag", {
+                        friendly_team: friendlyTeam,
+                        image_hint: objectiveRowImageHint(row),
+                        text_hint: objectiveRowTextHint(row).replace(/^s+/, ""),
+                        killer_side: objectiveFeedKillerSide(row, friendlyTeam)
+                    });
+                }
                 continue; // only your team clearing an enemy structure counts
             }
 

@@ -65,6 +65,8 @@ pub type TargetId = String;
 pub struct ProviderTarget {
     id: TargetId,
     name: String,
+    battery: Option<i64>,
+    connected: bool,
     toy: Option<Toy>,
 }
 impl fmt::Debug for ProviderTarget {
@@ -88,11 +90,21 @@ impl ProviderTarget {
     pub fn name(&self) -> &str {
         &self.name
     }
+    /// Battery percentage the Lovense app reported, if any.
+    pub fn battery(&self) -> Option<i64> {
+        self.battery
+    }
+    /// Whether the Lovense app currently sees the toy as connected.
+    pub fn connected(&self) -> bool {
+        self.connected
+    }
     #[cfg(test)]
     pub(crate) fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
+            battery: None,
+            connected: true,
             toy: None,
         }
     }
@@ -101,6 +113,8 @@ fn target_from_lovense(toy: Toy) -> ProviderTarget {
     ProviderTarget {
         id: toy.id.clone(),
         name: toy.name.clone(),
+        battery: toy.battery,
+        connected: toy.status_connected,
         toy: Some(toy),
     }
 }
@@ -120,18 +134,23 @@ impl ProviderError {
     /// what gets logged.
     pub fn user_message(&self) -> String {
         match self {
-            Self::Lovense(LovenseError::EmptyDomain) => "Enter a connection domain first.".to_owned(),
+            Self::Lovense(LovenseError::EmptyDomain) => {
+                "Enter a connection domain first.".to_owned()
+            }
             Self::Lovense(LovenseError::Transport(_)) => {
                 "Can't reach the Lovense app. Is Game Mode on?".to_owned()
             }
-            Self::Lovense(LovenseError::HttpStatus(_)) => "Lovense app didn't respond as expected.".to_owned(),
-            Self::Lovense(LovenseError::Decode { .. }) => "Got an unexpected response from Lovense.".to_owned(),
+            Self::Lovense(LovenseError::HttpStatus(_)) => {
+                "Lovense app didn't respond as expected.".to_owned()
+            }
+            Self::Lovense(LovenseError::Decode { .. }) => {
+                "Got an unexpected response from Lovense.".to_owned()
+            }
             Self::Lovense(LovenseError::CommandRejected { message }) => {
                 format!("Lovense rejected the request: {message}")
             }
-            Self::Lovense(LovenseError::InvalidStrength) | Self::Lovense(LovenseError::InvalidDuration) => {
-                self.to_string()
-            }
+            Self::Lovense(LovenseError::InvalidStrength)
+            | Self::Lovense(LovenseError::InvalidDuration) => self.to_string(),
             Self::InvalidSetup => "Enter a domain and port first.".to_owned(),
             Self::NotConnected => "Not connected yet.".to_owned(),
         }

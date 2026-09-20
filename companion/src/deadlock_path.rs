@@ -518,7 +518,9 @@ fn windows_steam_roots() -> Result<Vec<PathBuf>, DetectionError> {
         }
     }
 
-    if roots.is_empty() && let Some(error) = meaningful_error {
+    if roots.is_empty()
+        && let Some(error) = meaningful_error
+    {
         return Err(error);
     }
     Ok(roots)

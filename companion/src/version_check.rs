@@ -30,9 +30,15 @@ struct LatestReleaseResponse {
 pub enum VersionCheckState {
     #[default]
     Checking,
-    Current { latest: Version },
-    UpdateAvailable { latest: Version },
-    Unavailable { reason: String },
+    Current {
+        latest: Version,
+    },
+    UpdateAvailable {
+        latest: Version,
+    },
+    Unavailable {
+        reason: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]

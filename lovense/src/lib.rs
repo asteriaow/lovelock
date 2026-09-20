@@ -187,7 +187,7 @@ impl LovenseClient {
     /// the reason described on [`vibrate`](Self::vibrate).
     pub fn vibrate_steady(&self, toy: Option<&Toy>, strength: u8) -> Result<(), Error> {
         validate_strength(strength)?;
-        self.send(&function_command(&format!("All:{strength}"), None, toy))?;
+        self.send(&function_command(&format!("All:{strength}"), Some(0), toy))?;
         Ok(())
     }
 

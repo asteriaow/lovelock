@@ -121,7 +121,11 @@ pub struct ResolvedVibrateAction {
 }
 impl ResolvedVibrateAction {
     pub fn summary(self) -> String {
-        format!("{}/20 for {} s", self.strength, format_seconds_value(self.duration_secs))
+        format!(
+            "{}/20 for {} s",
+            self.strength,
+            format_seconds_value(self.duration_secs)
+        )
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -213,9 +217,8 @@ impl VibrateActionSettings {
         rng: &mut R,
     ) -> Result<ResolvedVibrateAction, ActionValidationError> {
         let strength = match self.mode {
-            VibrateMode::Fixed => {
-                portable_strength(self.fixed.strength).ok_or(ActionValidationError::InvalidStrength)?
-            }
+            VibrateMode::Fixed => portable_strength(self.fixed.strength)
+                .ok_or(ActionValidationError::InvalidStrength)?,
             VibrateMode::Interval => {
                 let minimum = portable_strength(self.interval.minimum_strength)
                     .ok_or(ActionValidationError::InvalidStrength)?;
@@ -273,7 +276,7 @@ pub const MAX_INTENSITY_WINDOW_SECS: f32 = 20.0;
 /// The largest windowed-amount figure the curve editor plots and clamps to.
 /// Sized for the biggest stream (damage dealt); the graph auto-scales its
 /// x-axis to the curve's own points within this cap.
-pub const MAX_INTENSITY_DAMAGE: f32 = 6000.0;
+pub const MAX_INTENSITY_DAMAGE: f32 = 5000.0;
 
 /// One control point on an intensity curve: `damage` (an amount summed within
 /// the window - damage taken, healing received, or damage dealt) maps to
@@ -341,17 +344,19 @@ impl IntensityCurve {
     /// clamped, sorted by damage, de-duplicated, and padded back to at least
     /// two if a caller left fewer.
     pub fn normalize(&mut self) {
-        self.window_seconds = self
-            .window_seconds
-            .clamp(0.5, MAX_INTENSITY_WINDOW_SECS);
-        self.pulse_seconds = portable_vibrate_duration(self.pulse_seconds)
-            .unwrap_or_else(|| nearest_duration_step(self.pulse_seconds.clamp(0.25, MAX_VIBRATE_DURATION)));
+        self.window_seconds = self.window_seconds.clamp(0.5, MAX_INTENSITY_WINDOW_SECS);
+        self.pulse_seconds = portable_vibrate_duration(self.pulse_seconds).unwrap_or_else(|| {
+            nearest_duration_step(self.pulse_seconds.clamp(0.25, MAX_VIBRATE_DURATION))
+        });
         for point in &mut self.points {
             point.damage = point.damage.clamp(0.0, MAX_INTENSITY_DAMAGE);
-            point.level = point.level.clamp(MIN_VIBRATE_STRENGTH, MAX_VIBRATE_STRENGTH);
+            point.level = point
+                .level
+                .clamp(MIN_VIBRATE_STRENGTH, MAX_VIBRATE_STRENGTH);
         }
         self.points.sort_by(|a, b| a.damage.total_cmp(&b.damage));
-        self.points.dedup_by(|a, b| (a.damage - b.damage).abs() < 1.0);
+        self.points
+            .dedup_by(|a, b| (a.damage - b.damage).abs() < 1.0);
         while self.points.len() < 2 {
             let last = self.points.last().copied().unwrap_or(IntensityPoint {
                 damage: 100.0,
@@ -558,8 +563,16 @@ mod tests {
         }
         // Damage dealt is a far bigger stream, so its top point sits well
         // above the healing one and within the plot cap.
-        let dealt_top = IntensityCurve::starter_damage_given().points.last().unwrap().damage;
-        let heal_top = IntensityCurve::starter_healing().points.last().unwrap().damage;
+        let dealt_top = IntensityCurve::starter_damage_given()
+            .points
+            .last()
+            .unwrap()
+            .damage;
+        let heal_top = IntensityCurve::starter_healing()
+            .points
+            .last()
+            .unwrap()
+            .damage;
         assert!(dealt_top > heal_top);
         assert!(dealt_top <= MAX_INTENSITY_DAMAGE);
     }
