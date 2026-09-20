@@ -8,6 +8,10 @@
     var localPlayerPanel = null;
     var deathBaselineEstablished = false;
     var wasDead = false;
+    // Polls left in which vitals are re-baselined after a respawn: the health
+    // bar refills and ramps up from 0, and that is not healing you received.
+    var RESPAWN_VITALS_SETTLE_POLLS = 15;
+    var respawnVitalsSettlePolls = 0;
     var sequence = 0;
     var abilityRoot = null;
     var abilityHeroIdentity = null;
@@ -898,7 +902,9 @@
     var FEEDBACK_LABEL_CLASS = "HudIndicatorText";
     var FEEDBACK_DAMAGE_CLASSES = [
         "damage_type_gun", "damage_type_ability", "damage_type_melee",
-        "damage_type_pure", "damage_type_poison"
+        "damage_type_pure", "damage_type_poison",
+        "bullet_damage_new", "ability_damage_new", "melee_damage_new",
+        "pure_damage_new"
     ];
     // label -> HudIndicatorContainer -> WindowRoot(instance) carries the
     // category class. Walk well past that in case of extra wrappers.
@@ -930,6 +936,8 @@
     var labelKindCache = [];        // [{panel, category}] classified feedback labels
     var damageGivenFlushAt = 0;
     var damageDiagBudget = 30;
+    var unclassDiagBudget = 40;
+    var unclassDiagPanels = [];
     var damageDiagPanels = [];
 
     var parryCdWas = false;
@@ -992,7 +1000,7 @@
         var raw = ("" + text).trim().toLowerCase();
         // A feedback popup also carries an effectiveness label like "(50)%";
         // that is not a damage amount.
-        if (raw.indexOf("%") !== -1) {
+        if (raw.indexOf("%") !== -1 || /[0-9] *(ms|s|sec)$/.test(raw)) {
             return 0;
         }
         var scale = 1;
@@ -1185,7 +1193,9 @@
                 category = feedbackCategory(label);
                 labelKindCache.push({ panel: label, category: category });
             }
-            if (damageDiagBudget > 0 && damageDiagPanels.indexOf(label) === -1) {
+            // Empty, uncategorised labels exist from match start and used to
+            // burn the whole diag budget before any real hit; skip them.
+            if (category.kind !== null && damageDiagBudget > 0 && damageDiagPanels.indexOf(label) === -1) {
                 damageDiagBudget--;
                 damageDiagPanels.push(label);
                 emit("damage_feedback_diag", {
@@ -1195,9 +1205,37 @@
                 });
             }
 
+            // Uncategorised labels with text: log their ancestry so a wrong class
+            // name for the floating damage numbers shows up in console.log.
+            if (category.kind === null && unclassDiagBudget > 0 && unclassDiagPanels.indexOf(label) === -1) {
+                var unclassText = panelProperty(label, "text");
+                if (typeof unclassText === "string" && unclassText !== "" && /[0-9]/.test(unclassText)) {
+                    unclassDiagBudget--;
+                    unclassDiagPanels.push(label);
+                    var chain = [];
+                    var up = label;
+                    for (var u = 0; u < 5 && isValidPanel(up); u++) {
+                        chain.push(indicatorClassList(up));
+                        up = panelParent(up);
+                    }
+                    emit("damage_unclassified_diag", { text: unclassText, chain: chain.join(" < ") });
+                }
+            }
             // A heal number is not damage you dealt; skip it. Anything without
             // a damage_type class (xp, mana burn, status text) is skipped too.
-            if (category.kind !== "damage") {
+            // The game's own damage numbers carry no category class (verified in
+            // console.log: label < HudIndicatorContainer < bare or "crit buffed"
+            // WindowRoot), unlike heal/gold/deny, so a plain unsigned number in an
+            // indicator container that is none of those is a damage number.
+            var plainDamage = false;
+            if (category.kind === null) {
+                var plainText = panelProperty(label, "text");
+                plainDamage = typeof plainText === "string" && /^[0-9][0-9.,]*k?$/i.test(plainText.trim())
+                    && anyAncestorHasClass(label, "HudIndicatorContainer", 3)
+                    && !anyAncestorHasClass(label, "gold", 6)
+                    && !anyAncestorHasClass(label, "deny", 6);
+            }
+            if (category.kind !== "damage" && !plainDamage) {
                 continue;
             }
 
@@ -1388,6 +1426,7 @@
         "team1", "team2"
     ];
     var objHealthDiagBudget = 40;
+    var objHealthNullDiagBudget = 15;
 
     // The team layout builds several objective_health panels (per team and per
     // structure group), most of them idle, so every one is checked and tracked
@@ -1434,8 +1473,49 @@
     var OBJECTIVE_TYPE_RECHECK_POLLS = 10; // ~5s at the objective cadence
     var OBJECTIVE_DIAG_MIN_MS = 3000;
 
+    // The bars are named objective_<entity index> at runtime, so they are also
+    // found by id in case the objective_health class is not on the panel.
+    var objIdPanels = [];
+    var objIdScanPolls = 0;
+    var objIdDiagBudget = 25;
+
+    function collectObjectiveIdPanels(node, depth, out) {
+        if (depth > 7 || out.length >= 40) {
+            return;
+        }
+        var kids = panelChildren(node);
+        for (var i = 0; i < kids.length && out.length < 40; i++) {
+            var kid = kids[i];
+            if (!isValidPanel(kid)) {
+                continue;
+            }
+            var id = panelProperty(kid, "id");
+            if (typeof id === "string" && id.indexOf("objective_") === 0) {
+                out.push(kid);
+            }
+            collectObjectiveIdPanels(kid, depth + 1, out);
+        }
+    }
+
     function pollObjectiveHealth(root) {
         var matches = findChildrenWithClass(root, OBJECTIVE_HEALTH_CLASS);
+        objIdPanels = prunedValidPanels(objIdPanels);
+        if (objIdScanPolls++ % 5 === 0) {
+            var found = [];
+            collectObjectiveIdPanels(root, 0, found);
+            for (var f = 0; f < found.length; f++) {
+                if (objIdPanels.indexOf(found[f]) === -1) {
+                    objIdPanels.push(found[f]);
+                    if (objIdDiagBudget > 0) {
+                        objIdDiagBudget--;
+                        emit("objective_health_diag", { by: "id", id: panelProperty(found[f], "id"), classes: objectiveHealthSignature(found[f]) });
+                    }
+                }
+            }
+        }
+        for (var g = 0; g < objIdPanels.length; g++) {
+            if (matches.indexOf(objIdPanels[g]) === -1) { matches.push(objIdPanels[g]); }
+        }
         objHealthTracked = prunedValidPanelEntries(objHealthTracked);
         var now = Date.now();
         for (var m = 0; m < matches.length; m++) {
@@ -1465,6 +1545,18 @@
                 }
                 entry.type = objectiveHealthType(w);
                 if (entry.type === null) {
+                    // Log panels that matched objective_health but carry none of
+                    // the type classes, so a wrong class name shows in console.log.
+                    if (objHealthNullDiagBudget > 0 && !entry.nullLogged) {
+                        entry.nullLogged = true;
+                        objHealthNullDiagBudget--;
+                        emit("objective_health_diag", {
+                            type: null,
+                            id: panelProperty(w, "id"),
+                            paneltype: panelProperty(w, "paneltype"),
+                            classes: objectiveHealthSignature(w)
+                        });
+                    }
                     continue; // mid boss / neutral / nothing shown yet
                 }
                 entry.friendly = anyAncestorHasClass(w, "friend", 6);
@@ -1488,10 +1580,12 @@
             if (entry.friendly) {
                 continue; // a friendly objective
             }
-            if (!entry.weakened && entry.type === "titan" && objHasClass(w, "is_weakened")) {
+            // Phase 1 ends when the Patron starts transforming, ~20s before
+            // is_weakened would appear, so is_transforming is the only trigger.
+            if (!entry.weakened && entry.type === "titan" && objHasClass(w, "is_transforming")) {
                 entry.weakened = true;
                 emitObjectiveDeduped("objective_patron_weakened", {
-                    detection: "objective_health:is_titan+is_weakened"
+                    detection: "objective_health:is_titan+is_transforming"
                 });
             }
             if (!entry.dead && objHasClass(w, "is_dead")) {
@@ -1714,6 +1808,121 @@
         }
     }
 
+    // Shape dump of #ObjectivesMap: every panel that has an id, with the
+    // classes that matter, logged whenever the set changes. Base Guardians,
+    // Shrines and the Patron have no styled panel in the shipped map, so this
+    // shows what (if anything) it exposes for them during a real match.
+    var MAP_DIAG_PROBES = [
+        "Alive", "Dead", "Titan", "Core", "Icon", "Team1", "Team2",
+        "Team1IsEnemy", "Team2IsEnemy", "Team1IsFriend", "Team2IsFriend",
+        "Weakened", "Invulnerable", "Underattack"
+    ];
+    var mapDiagBudget = 60;
+    var mapDiagSig = "";
+    var mapDiagLastAt = 0;
+    var MAP_DIAG_MIN_MS = 2000;
+
+    function collectMapPanels(node, depth, out) {
+        if (depth > 4 || out.length >= 80) {
+            return;
+        }
+        var kids = panelChildren(node);
+        for (var i = 0; i < kids.length && out.length < 80; i++) {
+            var kid = kids[i];
+            if (!isValidPanel(kid)) {
+                continue;
+            }
+            var id = panelProperty(kid, "id");
+            if (typeof id === "string" && id !== "") {
+                var hit = [];
+                for (var p = 0; p < MAP_DIAG_PROBES.length; p++) {
+                    if (panelHasClass(kid, MAP_DIAG_PROBES[p])) {
+                        hit.push(MAP_DIAG_PROBES[p]);
+                    }
+                }
+                out.push(id + "[" + hit.join(",") + "]");
+            }
+            collectMapPanels(kid, depth + 1, out);
+        }
+    }
+
+    function pollObjectivesMapDiag(objMap) {
+        if (mapDiagBudget <= 0) {
+            return;
+        }
+        var now = Date.now();
+        if (now - mapDiagLastAt < MAP_DIAG_MIN_MS) {
+            return;
+        }
+        mapDiagLastAt = now;
+        var out = [];
+        collectMapPanels(objMap, 0, out);
+        var sig = out.join(" ");
+        if (sig === mapDiagSig) {
+            return;
+        }
+        mapDiagSig = sig;
+        mapDiagBudget--;
+        emit("objectives_map_diag", { count: out.length, panels: sig });
+    }
+
+    // Base Guardians have no objective_ bar, but the map has a map_button with
+    // class boss_barracks_icon for each. A live enemy one carries "active" and
+    // "enemy"; when the guardian dies "active" drops off the same panel.
+    // The Patron phase 1 icon (boss_icon_t3) is handled the same way, and
+    // boss_buildingzip is only logged until its meaning is confirmed.
+    var MAP_ICON_KINDS = [
+        { cls: "boss_barracks_icon", event: "objective_base_guardian", detection: "map:boss_barracks_icon_active_cleared" },
+        { cls: "boss_icon_t3", event: "objective_patron_weakened", detection: "map:boss_icon_t3_active_cleared" },
+        { cls: "boss_buildingzip", event: null, detection: "" }
+    ];
+    var barracksPanels = [];   // [{panel, kind, wasActive, dead}]
+    var barracksScanPolls = 0;
+    var barracksDiagBudget = 20;
+
+    function pollBarracksMap(root) {
+        barracksPanels = prunedValidPanelEntries(barracksPanels);
+        if (barracksScanPolls++ % 5 === 0) {
+            for (var q = 0; q < MAP_ICON_KINDS.length; q++) {
+                var found = findChildrenWithClass(root, MAP_ICON_KINDS[q].cls);
+                for (var f = 0; f < found.length; f++) {
+                    var known = false;
+                    for (var k = 0; k < barracksPanels.length; k++) {
+                        if (barracksPanels[k].panel === found[f]) { known = true; break; }
+                    }
+                    if (!known) {
+                        barracksPanels.push({ panel: found[f], kind: MAP_ICON_KINDS[q], wasActive: false, dead: false });
+                    }
+                }
+            }
+        }
+        for (var i = 0; i < barracksPanels.length; i++) {
+            var e = barracksPanels[i];
+            var p = e.panel;
+            var active = panelHasClass(p, "active");
+            var enemyish = panelHasClass(p, "enemy");
+            if (active && !e.wasActive && barracksDiagBudget > 0) {
+                barracksDiagBudget--;
+                emit("barracks_map_diag", { kind: e.kind.cls, enemy: enemyish, classes: indicatorClassList(p) });
+            }
+            if (active) {
+                e.wasActive = true;
+                continue;
+            }
+            if (e.wasActive && !e.dead && enemyish && e.kind.event !== null) {
+                e.dead = true;
+                // Each panel fires once (e.dead), so several Base Guardians dying
+                // close together each count. Only the single Patron icon dedupes,
+                // against its HUD-bar path.
+                if (e.kind.cls === "boss_barracks_icon") {
+                    emitAction(e.kind.event, { detection: e.kind.detection });
+                } else {
+                    emitObjectiveDeduped(e.kind.event, { detection: e.kind.detection });
+                }
+            }
+        }
+    }
+
     function pollObjectives(root) {
         if (!isValidPanel(root)) {
             return;
@@ -1728,10 +1937,14 @@
         try {
             pollMatchEnd(root);
             pollObjectiveHealth(root);
+            pollBarracksMap(root);
 
             var objMap = findCachedChildById(root, OBJECTIVE_MAP_ID);
             var enemy = isValidPanel(objMap) ? objectiveEnemyTeam(objMap) : null;
             pollObjectiveFeed(root, enemy === null ? null : (enemy === "1" ? "2" : "1"));
+            if (isValidPanel(objMap)) {
+                pollObjectivesMapDiag(objMap);
+            }
 
             if (!isValidPanel(objMap)) {
                 return;
@@ -2006,6 +2219,7 @@
                 // state signal, not a trigger, so it must not consume a slot in
                 // the monotonic trigger sequence.
                 emit("local_player_respawn", {});
+                respawnVitalsSettlePolls = RESPAWN_VITALS_SETTLE_POLLS;
             }
             wasDead = isDead;
         }
@@ -2020,13 +2234,17 @@
         }
         var spectating = !controllingOwnHero(currentAbilityRoot);
 
-        var rebaselineVitals = forceAbilityBaseline || baselineSettlePollsRemaining > 0;
+        if (respawnVitalsSettlePolls > 0 && !isDead) {
+            respawnVitalsSettlePolls--;
+        }
+        var rebaselineVitals = forceAbilityBaseline || baselineSettlePollsRemaining > 0
+            || isDead || respawnVitalsSettlePolls > 0;
         // A bad panel read in any one watcher must never kill the poll loop
         // (which also carries death detection). pollCombat keeps its own inner
         // catch so a combat throw doesn't skip the polls listed after it.
         try {
             pollAbilities(forceAbilityBaseline || isDead || spectating, currentAbilityRoot);
-            pollOwnKillStreak(player, rebaselineVitals);
+            pollOwnKillStreak(player, forceAbilityBaseline || baselineSettlePollsRemaining > 0);
             pollVitals(hudRoot, rebaselineVitals);
             // Objectives and match end are team/match-level state, valid whether
             // or not you are on your own hero, so they run outside the gate.
@@ -2035,7 +2253,7 @@
                 pollDamageImpactAssists(hudRoot);
                 pollAllySupport(hudRoot);
                 pollSoulDeny(hudRoot);
-                pollCombat(hudRoot, rebaselineVitals || isDead);
+                pollCombat(hudRoot, rebaselineVitals);
             }
         } catch (_error) {
         }
