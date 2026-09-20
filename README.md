@@ -27,7 +27,7 @@ You don't need to build anything or know how to code to use this. Here's everyth
 **What you need:**
 - [Deadlock](https://store.steampowered.com/app/1422450/Deadlock/) installed via Steam
 - A Lovense toy, plus the [Lovense Connect/Remote app](https://www.lovense.com/download) on the same PC you play Deadlock on
-- Windows (Lovelock Companion also runs on Linux, but these steps assume Windows)
+- Windows
 
 **Steps:**
 
