@@ -154,6 +154,7 @@ pub enum BridgeEvent {
     ObjectiveShrine(CountTrigger),
     ObjectivePatronWeakened(CountTrigger),
     GameWon(CountTrigger),
+    GameLost(CountTrigger),
     DamageTakenIntensity(CountTrigger),
     AbilityUsed(AbilityTrigger),
     AbilityCooldownReady(AbilityTrigger),
@@ -183,6 +184,7 @@ impl BridgeEvent {
             Self::ObjectiveShrine(_) => "objective_shrine",
             Self::ObjectivePatronWeakened(_) => "objective_patron_weakened",
             Self::GameWon(_) => "game_won",
+            Self::GameLost(_) => "game_lost",
             Self::DamageTakenIntensity(_) => "damage_taken_intensity",
             Self::AbilityUsed(_) => "ability_used",
             Self::AbilityCooldownReady(_) => "ability_cooldown_ready",
@@ -334,6 +336,14 @@ enum WireEvent {
     },
     #[serde(rename = "game_won")]
     GameWon {
+        schema: u32,
+        session_id: String,
+        client_time_ms: u64,
+        sequence: u64,
+        detection: String,
+    },
+    #[serde(rename = "game_lost")]
+    GameLost {
         schema: u32,
         session_id: String,
         client_time_ms: u64,
@@ -671,6 +681,21 @@ pub fn parse_bridge_record(record: &str) -> Option<BridgeEvent> {
             sequence,
             detection,
         } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::GameWon(CountTrigger {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+            count_before: None,
+            count_after: None,
+        })),
+        WireEvent::GameLost {
+            schema,
+            session_id,
+            client_time_ms,
+            sequence,
+            detection,
+        } if schema == BRIDGE_SCHEMA => Some(BridgeEvent::GameLost(CountTrigger {
             schema,
             session_id,
             client_time_ms,
@@ -1415,6 +1440,7 @@ fn log_rejected_bridge_record(line: &str) {
                 | "objective_shrine"
                 | "objective_patron_weakened"
                 | "game_won"
+                | "game_lost"
                 | "damage_taken_intensity"
                 | "damage_given"
         )

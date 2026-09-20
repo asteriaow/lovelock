@@ -87,7 +87,7 @@ impl AbilityFilter {
 /// pulled from this build (enum variants, settings fields and persistence
 /// stay, per the retirement pattern above) -- re-add their lines to bring
 /// them back.
-pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 14] = [
+pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 15] = [
     TriggerKind::Death,
     TriggerKind::Kill,
     TriggerKind::Assist,
@@ -102,6 +102,7 @@ pub(crate) const PRIORITY_ORDER_DEFAULT: [TriggerKind; 14] = [
     TriggerKind::ObjectiveShrine,
     TriggerKind::ObjectivePatronWeakened,
     TriggerKind::GameWon,
+    TriggerKind::GameLost,
 ];
 
 /// The name every session starts with and that a state file from before
@@ -171,6 +172,8 @@ pub struct TriggerSettingsSet {
     pub objective_patron_weakened: TriggerSettings,
     /// Fires once when your team wins the match.
     pub game_won: TriggerSettings,
+    /// Fires once when your team loses the match.
+    pub game_lost: TriggerSettings,
     /// Retired standalone enable flag for the old health-band intensity
     /// trigger. Kept so `get`/`get_mut` stay exhaustive and an old profile
     /// still deserializes; not shown in the UI.
@@ -260,6 +263,10 @@ impl Default for TriggerSettingsSet {
                 actions: actions.clone(),
             },
             game_won: TriggerSettings {
+                enabled: false,
+                actions: actions.clone(),
+            },
+            game_lost: TriggerSettings {
                 enabled: false,
                 actions: actions.clone(),
             },
@@ -425,6 +432,7 @@ pub enum TriggerKind {
     ObjectiveShrine,
     ObjectivePatronWeakened,
     GameWon,
+    GameLost,
     DamageTakenIntensity,
 }
 
@@ -451,6 +459,7 @@ impl TriggerKind {
             Self::ObjectiveShrine => "shrine destroyed",
             Self::ObjectivePatronWeakened => "patron weakened",
             Self::GameWon => "game won",
+            Self::GameLost => "game lost",
             Self::DamageTakenIntensity => "damage intensity",
         }
     }
@@ -516,6 +525,7 @@ impl TriggerSettingsSet {
             TriggerKind::ObjectiveShrine => &self.objective_shrine,
             TriggerKind::ObjectivePatronWeakened => &self.objective_patron_weakened,
             TriggerKind::GameWon => &self.game_won,
+            TriggerKind::GameLost => &self.game_lost,
             TriggerKind::DamageTakenIntensity => &self.damage_taken_intensity,
         }
     }
@@ -542,6 +552,7 @@ impl TriggerSettingsSet {
             TriggerKind::ObjectiveShrine => &mut self.objective_shrine,
             TriggerKind::ObjectivePatronWeakened => &mut self.objective_patron_weakened,
             TriggerKind::GameWon => &mut self.game_won,
+            TriggerKind::GameLost => &mut self.game_lost,
             TriggerKind::DamageTakenIntensity => &mut self.damage_taken_intensity,
         }
     }
@@ -584,6 +595,7 @@ impl TriggerSettingsSet {
             | TriggerKind::ObjectiveShrine
             | TriggerKind::ObjectivePatronWeakened
             | TriggerKind::GameWon
+            | TriggerKind::GameLost
             | TriggerKind::DamageTakenIntensity
             | TriggerKind::DamageTaken
             | TriggerKind::HealingReceived => None,
@@ -610,6 +622,7 @@ impl TriggerSettingsSet {
             | TriggerKind::ObjectiveShrine
             | TriggerKind::ObjectivePatronWeakened
             | TriggerKind::GameWon
+            | TriggerKind::GameLost
             | TriggerKind::DamageTakenIntensity
             | TriggerKind::DamageTaken
             | TriggerKind::HealingReceived => None,
@@ -760,6 +773,7 @@ impl TriggerIdentity {
                 | TriggerKind::ObjectiveShrine
                 | TriggerKind::ObjectivePatronWeakened
                 | TriggerKind::GameWon
+                | TriggerKind::GameLost
                 | TriggerKind::DamageTakenIntensity
         ) {
             return format!(
@@ -2378,6 +2392,7 @@ impl AppState {
                         | BridgeEvent::ObjectiveShrine(count)
                         | BridgeEvent::ObjectivePatronWeakened(count)
                         | BridgeEvent::GameWon(count)
+                        | BridgeEvent::GameLost(count)
                         | BridgeEvent::DamageTakenIntensity(count) => log::info!(
                             target: "companion::app",
                             "bridge_trigger_received trigger={} session_id={:?} sequence={} client_time_ms={} detection={:?}",
@@ -2480,6 +2495,9 @@ impl AppState {
                         }
                         BridgeEvent::GameWon(count) => {
                             Some(TriggerIdentity::from_count(TriggerKind::GameWon, count))
+                        }
+                        BridgeEvent::GameLost(count) => {
+                            Some(TriggerIdentity::from_count(TriggerKind::GameLost, count))
                         }
                         // The mod's health-band signal is ignored; intensity is
                         // now computed from the damage-taken amount stream and
@@ -4464,6 +4482,7 @@ fn first_copy_source(destination: TriggerKind) -> TriggerKind {
         | TriggerKind::ObjectiveShrine
         | TriggerKind::ObjectivePatronWeakened
         | TriggerKind::GameWon
+        | TriggerKind::GameLost
         | TriggerKind::DamageTakenIntensity
         | TriggerKind::AbilityUse
         | TriggerKind::AbilityCooldownReady
@@ -4494,6 +4513,7 @@ fn trigger_display_label(kind: TriggerKind) -> &'static str {
         TriggerKind::ObjectiveShrine => "Shrine destroyed",
         TriggerKind::ObjectivePatronWeakened => "Patron weakened",
         TriggerKind::GameWon => "Game won",
+        TriggerKind::GameLost => "Game lost",
         TriggerKind::DamageTakenIntensity => "Damage intensity",
     }
 }
@@ -4523,6 +4543,7 @@ fn trigger_icon(kind: TriggerKind) -> &'static str {
         TriggerKind::ObjectiveShrine => egui_phosphor::regular::CASTLE_TURRET,
         TriggerKind::ObjectivePatronWeakened => egui_phosphor::regular::CROWN_SIMPLE,
         TriggerKind::GameWon => egui_phosphor::regular::TROPHY,
+        TriggerKind::GameLost => egui_phosphor::regular::SKULL,
         TriggerKind::DamageTakenIntensity => egui_phosphor::regular::WARNING_OCTAGON,
     }
 }
@@ -4706,6 +4727,7 @@ fn bridge_event_description(event: &BridgeEvent) -> String {
             format!("objective_patron_weakened, {}", count_description(count))
         }
         BridgeEvent::GameWon(count) => format!("game_won, {}", count_description(count)),
+        BridgeEvent::GameLost(count) => format!("game_lost, {}", count_description(count)),
         BridgeEvent::DamageTakenIntensity(count) => {
             format!("damage_taken_intensity, {}", count_description(count))
         }

@@ -1316,6 +1316,7 @@
     var objectiveAliveState = {};   // full id -> last-seen `.Alive` boolean
     var objectivesBaselined = false;
     var gameWonEmitted = false;
+    var gameLostEmitted = false;
     var objHealthTracked = [];      // [{panel, sig, dead, weakened}] per objective_health panel
     var creditedObjectiveFeedPanels = []; // feed rows already handled (rows fade + tear down)
     var recentObjectiveEmits = {};        // objective event name -> last emit Date.now()
@@ -1326,6 +1327,7 @@
         objectiveAliveState = {};
         objectivesBaselined = false;
         gameWonEmitted = false;
+        gameLostEmitted = false;
         objHealthTracked = [];
         creditedObjectiveFeedPanels = [];
         recentObjectiveEmits = {};
@@ -1680,7 +1682,7 @@
     }
 
     function pollMatchEnd(root) {
-        if (gameWonEmitted) {
+        if (gameWonEmitted || gameLostEmitted) {
             return;
         }
         var ends = findChildrenWithClass(root, "ShowMatchEnd");
@@ -1697,6 +1699,16 @@
             if (won) {
                 gameWonEmitted = true;
                 emitAction("game_won", { detection: "match_end:local_team_victory" });
+                return;
+            }
+            var lost =
+                (panelHasAnyClass(p, ["LocalPlayerTeam1", "localPlayerTeam1"])
+                    && panelHasClass(p, "Team2Victory"))
+                || (panelHasAnyClass(p, ["LocalPlayerTeam2", "localPlayerTeam2"])
+                    && panelHasClass(p, "Team1Victory"));
+            if (lost) {
+                gameLostEmitted = true;
+                emitAction("game_lost", { detection: "match_end:enemy_team_victory" });
                 return;
             }
         }

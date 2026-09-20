@@ -134,6 +134,8 @@ struct PersistedTriggers {
     #[serde(default = "default_disabled_trigger")]
     game_won: PersistedTrigger,
     #[serde(default = "default_disabled_trigger")]
+    game_lost: PersistedTrigger,
+    #[serde(default = "default_disabled_trigger")]
     damage_taken_intensity: PersistedTrigger,
     // `damage_taken_intensity_curve` is the name the first (separate-trigger)
     // version wrote; accepted as an alias so that file keeps its curve.
@@ -253,7 +255,7 @@ impl PersistedIntensityCurve {
 // here (same spot as `DamageTakenIntensity`) so the padding
 // `normalize_priority_order` does for a freshly reset/written file lines up
 // with the live order instead of re-inserting them mid-list.
-const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 20] = [
+const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 21] = [
     PersistedTriggerKind::LocalPlayerDeath,
     PersistedTriggerKind::LocalPlayerKill,
     PersistedTriggerKind::LocalPlayerAssist,
@@ -268,6 +270,7 @@ const DEFAULT_PRIORITY_ORDER: [PersistedTriggerKind; 20] = [
     PersistedTriggerKind::ObjectiveShrine,
     PersistedTriggerKind::ObjectivePatronWeakened,
     PersistedTriggerKind::GameWon,
+    PersistedTriggerKind::GameLost,
     PersistedTriggerKind::AllyHealed,
     PersistedTriggerKind::AllyShielded,
     PersistedTriggerKind::SoulDeny,
@@ -306,6 +309,7 @@ enum PersistedTriggerKind {
     ObjectiveShrine,
     ObjectivePatronWeakened,
     GameWon,
+    GameLost,
     DamageTakenIntensity,
 }
 
@@ -332,6 +336,7 @@ impl From<TriggerKind> for PersistedTriggerKind {
             TriggerKind::ObjectiveShrine => Self::ObjectiveShrine,
             TriggerKind::ObjectivePatronWeakened => Self::ObjectivePatronWeakened,
             TriggerKind::GameWon => Self::GameWon,
+            TriggerKind::GameLost => Self::GameLost,
             TriggerKind::DamageTakenIntensity => Self::DamageTakenIntensity,
         }
     }
@@ -360,6 +365,7 @@ impl From<PersistedTriggerKind> for TriggerKind {
             PersistedTriggerKind::ObjectiveShrine => Self::ObjectiveShrine,
             PersistedTriggerKind::ObjectivePatronWeakened => Self::ObjectivePatronWeakened,
             PersistedTriggerKind::GameWon => Self::GameWon,
+            PersistedTriggerKind::GameLost => Self::GameLost,
             PersistedTriggerKind::DamageTakenIntensity => Self::DamageTakenIntensity,
         }
     }
@@ -528,6 +534,7 @@ impl Default for PersistedTriggers {
             objective_shrine: disabled_trigger(vibrate.clone()),
             objective_patron_weakened: disabled_trigger(vibrate.clone()),
             game_won: disabled_trigger(vibrate.clone()),
+            game_lost: disabled_trigger(vibrate.clone()),
             damage_taken_intensity: disabled_trigger(vibrate),
             damage_taken_curve: default_intensity_curve(),
             healing_received_curve: default_healing_received_curve(),
@@ -723,6 +730,7 @@ impl PersistedTriggers {
                 &triggers.objective_patron_weakened,
             ),
             game_won: PersistedTrigger::from_app(&triggers.game_won),
+            game_lost: PersistedTrigger::from_app(&triggers.game_lost),
             damage_taken_intensity: PersistedTrigger::from_app(&triggers.damage_taken_intensity),
             damage_taken_curve: PersistedIntensityCurve::from_curve(&triggers.damage_taken_curve),
             healing_received_curve: PersistedIntensityCurve::from_curve(
@@ -763,6 +771,7 @@ impl PersistedTriggers {
             objective_shrine: self.objective_shrine.to_app(),
             objective_patron_weakened: self.objective_patron_weakened.to_app(),
             game_won: self.game_won.to_app(),
+            game_lost: self.game_lost.to_app(),
             damage_taken_intensity: self.damage_taken_intensity.to_app(),
             damage_taken_curve: self.damage_taken_curve.to_curve(),
             healing_received_curve: self.healing_received_curve.to_curve(),
@@ -808,6 +817,7 @@ impl PersistedTriggers {
         self.objective_shrine.actions.vibrate.normalize();
         self.objective_patron_weakened.actions.vibrate.normalize();
         self.game_won.actions.vibrate.normalize();
+        self.game_lost.actions.vibrate.normalize();
         self.damage_taken_intensity.actions.vibrate.normalize();
         self.damage_taken_curve =
             PersistedIntensityCurve::from_curve(&self.damage_taken_curve.to_curve());
@@ -1612,6 +1622,7 @@ mod tests {
             TriggerKind::ObjectiveShrine,
             TriggerKind::ObjectivePatronWeakened,
             TriggerKind::GameWon,
+            TriggerKind::GameLost,
         ];
         let persisted = PersistedState::from_app(&original);
         assert_eq!(
