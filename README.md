@@ -31,7 +31,7 @@ You don't need to build anything or know how to code to use this. Here's everyth
 
 **Steps:**
 
-1. **Install the Lovelock mod.** Download it from [GameBanana](https://gamebanana.com/mods/718568) and follow GameBanana's install instructions (or use a mod manager like [Deadlock Mod Manager](https://deadlockmods.app/)) to get it into Deadlock's `addons` folder, then make sure it's enabled in Deadlock's in-game mods menu.
+1. **Install the Lovelock mod.** Download it from [GameBanana](https://gamebanana.com/mods/718568) and follow GameBanana's install instructions (or use a mod manager like [Deadlock Mod Manager](https://deadlockmods.app/)) to get it into Deadlock's `addons` folder, then make sure it's enabled in Deadlock's in-game mods menu. If you copied the file in by hand instead of using a mod manager, also read [Troubleshooting](#troubleshooting), because Deadlock needs one extra setting to load the `addons` folder.
 
 2. **Set Deadlock's launch option.** In Steam, right-click Deadlock → **Properties** → **General** → **Launch Options**, and add:
    ```
@@ -39,7 +39,7 @@ You don't need to build anything or know how to code to use this. Here's everyth
    ```
    This makes Deadlock write the log file Lovelock Companion reads from. Without it, nothing will work.
 
-3. **Download Lovelock Companion.** Grab `companion.exe` from this repo's [Releases page](https://github.com/asteriaow/lovelock/releases). No installer needed, just download and run it.
+3. **Download Lovelock Companion.** Grab the Windows zip (`lovelock-vX.Y.Z-windows.zip`) from this repo's [Releases page](https://github.com/asteriaow/lovelock/releases). It contains the companion exe, the mod file (`pak01_dir.vpk`) and this README. No installer needed: unzip it and run the exe.
 
 4. **Open the Lovense Remote app** and turn on **Game Mode**. Leave it running in the background.
 
@@ -50,6 +50,29 @@ You don't need to build anything or know how to code to use this. Here's everyth
 7. **Launch Deadlock and play.** Lovelock Companion auto-detects the game and starts listening on its own. Just leave the companion window open in the background.
 
 If something's not connecting, check **Menu → Show logs** inside the companion for live diagnostics.
+
+## Troubleshooting
+
+**Triggers don't fire, but the Game connection tab says "Listening".** "Listening" only means the companion is watching the log file. It does not mean Deadlock is sending anything. Check these in order:
+
+1. **`-condebug` is set and the game was restarted.** See step 2 above. If the file `Deadlock\game\citadel\console.log` doesn't exist or never changes, this is the problem.
+2. **The log contains lines from the mod.** Launch Deadlock, get to the main menu, then run this in PowerShell (change the path if your Steam library is elsewhere):
+   ```powershell
+   Select-String -Path "C:\Program Files (x86)\Steam\steamapps\common\Deadlock\game\citadel\console.log" -Pattern "DEADLOCK_DEATH_HOOK" | Select-Object -First 5
+   ```
+   If lines come back, the mod is running. If nothing comes back, the mod is not loading, so keep going.
+3. **Deadlock is set up to load the `addons` folder.** A stock Deadlock does not load mods from `game\citadel\addons` on its own. Mod managers such as [Deadlock Mod Manager](https://deadlockmods.app/) add this for you, but if you copied the mod file in by hand you need it yourself. Open `Deadlock\game\citadel\gameinfo.gi`, find the `SearchPaths` block, and make sure this line is there, above `Mod citadel`:
+   ```
+   Game                citadel/addons
+   ```
+   Back the file up first. Game updates can overwrite `gameinfo.gi`, so if the mod stops working after an update, check this again (a mod manager re-applies it for you).
+4. **The mod file is in the right place.** It should sit directly in `game\citadel\addons` (not in a subfolder) and be named `pakNN_dir.vpk`, for example `pak01_dir.vpk`. The file is small, about 90 KB. If you already have other mods, use a free number rather than overwriting one.
+5. **Another mod isn't overriding the same file.** The Lovelock mod replaces a HUD layout file, so another HUD mod can take priority. Move your other mods out of `addons` for a test.
+6. **Restart Deadlock fully** after changing any of the above.
+
+**The companion says it can't reach Lovense.** Make sure the Lovense Remote app is open on the same PC with Game Mode on, then click **Test connection** in Setup. If your toy is paired to a phone instead, enter the domain and port shown on that phone's Game Mode screen.
+
+If you're still stuck, open an issue and paste the output of **Menu → Show logs**.
 
 ## Triggers
 
