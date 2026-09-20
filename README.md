@@ -67,7 +67,6 @@ overlap-priority order (reorderable in the UI) decides which one drives the toy.
 | **Cooldown ready** | An ability comes off cooldown | Also covers a charged ability restoring a charge. Same per-slot filter as Ability use. |
 | **Damage taken** | You take damage (health or shields) | Strength follows an intensity curve: a heavier beating over a rolling window drives the toy harder. |
 | **Healing received** | Your health/shields go up | Amount-based: a rolling-window sum gated by a threshold you set. |
-| **Healed an ally** | You restore a teammate's health | From the ally-support impact popup. |
 | **Damage given** | The game shows floating damage numbers for your hits | Amount-based: rolling-window sum gated by a threshold. |
 | **Got parried** | You get stunned right after starting a parry | Detected from your crosshair's stunned state. |
 | **Guardian destroyed** | An enemy Guardian falls | Objectives minimap panel loses its `Alive` state. |
@@ -76,6 +75,7 @@ overlap-priority order (reorderable in the UI) decides which one drives the toy.
 | **Shrine destroyed** | An enemy Shrine falls | Best-effort: the centre-screen boss-health bar. |
 | **Patron weakened** | The enemy Patron enters its first (weakened) phase | Best-effort: the boss-health bar shows `weakened`. |
 | **Game won** | Your team wins the match | The match-end screen shows your team's victory (also fires if the enemy Core falls first). |
+| **Game lost** | Your team lost the match | The match-end screen shows your team's loss (also fires if the your Core falls first). |
 
 Copy a vibration profile between triggers with the explicit **Copy** control
 (it copies only the active profile, not enablement or filters). Setup, the
