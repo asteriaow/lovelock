@@ -3724,7 +3724,7 @@ impl AppState {
                         ));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let status = listener_status_text(&self.bridge_listener.status());
-                            crate::theme::badge(ui, &status.0, status.1);
+                            status_dot_label(ui, &status.0, status.1.color());
                         });
                     });
                     ui.add_space(crate::theme::SPACE_SM);
