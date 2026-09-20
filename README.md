@@ -2,7 +2,7 @@
 
 # Lovelock Companion
 
-Lovelock Companion is a desktop app that syncs local-player events in Deadlock to a Lovense toy over the local Standard API. It reacts to deaths, kills, assists, ability use and cooldowns, damage dealt and taken, healing received, healing or shielding a teammate, soul-orb denies, parries, objective takedowns (Guardian, Walker, Shrine, ...), and winning the match. See [Triggers](#triggers) for the full list.
+Lovelock Companion is a desktop app that syncs local-player events in Deadlock to a Lovense toy over the local Standard API. It reacts to deaths, kills, assists, ability use and cooldowns, damage dealt and taken, healing received, objective takedowns (Guardian, Walker, Shrine, ...), and winning the match. See [Triggers](#triggers) for the full list.
 
 ## !!! Required Deadlock mod !!!
 
