@@ -92,11 +92,11 @@ overlap-priority order (reorderable in the UI) decides which one drives the toy.
 | **Healing received** | Your health/shields go up | Amount-based: a rolling-window sum gated by a threshold you set. |
 | **Damage given** | The game shows floating damage numbers for your hits | Amount-based: rolling-window sum gated by a threshold. |
 | **Got parried** | You get stunned right after starting a parry | Detected from your crosshair's stunned state. |
-| **Guardian destroyed** | An enemy Guardian falls | Objectives minimap panel loses its `Alive` state. |
-| **Walker destroyed** | An enemy Walker falls | Same objectives minimap surface. |
-| **Base Guardian destroyed** | An enemy Base Guardian falls | Best-effort: the centre-screen boss-health bar. |
-| **Shrine destroyed** | An enemy Shrine falls | Best-effort: the centre-screen boss-health bar. |
-| **Patron weakened** | The enemy Patron enters its first (weakened) phase | Best-effort: the boss-health bar shows `weakened`. |
+| **Guardian destroyed** | An enemy Guardian falls | Fires when it falls, whoever takes it. |
+| **Walker destroyed** | An enemy Walker falls | Fires when it falls, whoever takes it. |
+| **Base Guardian destroyed** | An enemy Base Guardian falls | Fires when it falls, whoever takes it. |
+| **Shrine destroyed** | An enemy Shrine falls | Fires when it falls, whoever takes it. |
+| **Patron weakened** | The enemy Patron enters its first (weakened) phase | Fires when the phase starts, whoever causes it. |
 | **Game won** | Your team wins the match | The match-end screen shows your team's victory (also fires if the enemy Core falls first). |
 | **Game lost** | Your team lost the match | The match-end screen shows your team's loss (also fires if the your Core falls first). |
 
@@ -106,12 +106,7 @@ Lovense connection, all vibration profiles, and ability filters are saved to
 your OS user config directory between runs.
 
 
-**Objective caveats.** Guardian / Walker / Game won read persistent, map-wide
-HUD panels and are reliable. Base Guardian / Shrine / Patron weakened have no
-such panel, so they are read off the single centre-screen boss-health bar,
-which only shows the objective you are currently near or contesting, so a kill
-that happens while you are elsewhere can be missed. Each trigger's `detection`
-field in the log names which HUD surface fired it.
+**Objectives.** Guardian, Walker, Base Guardian, Shrine and Patron triggers fire whenever that objective falls or changes phase, no matter who lands the final blow. You do not have to be the one to take it, and you do not have to be nearby. Each trigger's `detection` field in the log names which HUD surface fired it.
 
 ## Contents
 

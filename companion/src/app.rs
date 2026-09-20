@@ -2196,11 +2196,26 @@ impl AppState {
             .record(vitals.amount as f32, curve.window_seconds, now);
         let level = curve.level_for(total);
         if level < 1 {
+            log::info!(
+                target: "companion::app",
+                "intensity_skipped reason=below_curve trigger={} amount={} window_total={:.0}",
+                kind.intensity_noun(),
+                vitals.amount,
+                total
+            );
             return;
         }
         if let Some(last) = runtime.last_pulse
             && now.duration_since(last) < Self::INTENSITY_PULSE_GAP
         {
+            log::info!(
+                target: "companion::app",
+                "intensity_skipped reason=throttled trigger={} amount={} window_total={:.0} level={}",
+                kind.intensity_noun(),
+                vitals.amount,
+                total,
+                level
+            );
             return;
         }
         runtime.last_pulse = Some(now);
@@ -3155,34 +3170,38 @@ impl AppState {
                     self.draw_ability_filter(ui, kind, filter, busy);
                 }
 
-                crate::theme::divider(ui);
-                crate::theme::section_heading(ui, "Copy settings from");
-                ui.add_space(crate::theme::SPACE_SM);
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("copy-source")
-                        .selected_text(trigger_display_label(self.copy_source))
-                        .show_ui(ui, |ui| {
-                            for source in PRIORITY_ORDER_DEFAULT {
-                                if source == kind {
-                                    continue;
+                // Curve-driven triggers have their own shape to edit; copying another
+                // trigger's settings over them makes no sense.
+                if self.triggers.amount_curve(kind).is_none() {
+                    crate::theme::divider(ui);
+                    crate::theme::section_heading(ui, "Copy settings from");
+                    ui.add_space(crate::theme::SPACE_SM);
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("copy-source")
+                            .selected_text(trigger_display_label(self.copy_source))
+                            .show_ui(ui, |ui| {
+                                for source in PRIORITY_ORDER_DEFAULT {
+                                    if source == kind {
+                                        continue;
+                                    }
+                                    ui.selectable_value(
+                                        &mut self.copy_source,
+                                        source,
+                                        trigger_display_label(source),
+                                    );
                                 }
-                                ui.selectable_value(
-                                    &mut self.copy_source,
-                                    source,
-                                    trigger_display_label(source),
-                                );
-                            }
-                        });
-                    if crate::theme::button_secondary(ui, "Copy").clicked() {
-                        self.copy_action_settings(self.copy_source, kind);
+                            });
+                        if crate::theme::button_secondary(ui, "Copy").clicked() {
+                            self.copy_action_settings(self.copy_source, kind);
+                        }
+                    });
+                    if let Some(feedback) = &self.copy_feedback {
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(feedback)
+                                .size(crate::theme::SIZE_META)
+                                .color(crate::theme::SUCCESS),
+                        ));
                     }
-                });
-                if let Some(feedback) = &self.copy_feedback {
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(feedback)
-                            .size(crate::theme::SIZE_META)
-                            .color(crate::theme::SUCCESS),
-                    ));
                 }
 
                 if let Some(mut curve) = self.triggers.amount_curve(kind).cloned() {

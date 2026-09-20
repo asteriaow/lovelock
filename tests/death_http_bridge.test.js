@@ -388,6 +388,20 @@ function createHarness({
             damageImpactInstances = damageImpactInstances.filter((candidate) => candidate !== instance);
             damageImpactInfo.setChildren(damageImpactInstances);
         },
+        // A target in the damage-impact popup carrying a .damageValue label,
+        // the crosshair readout for damage you are dealing.
+        spawnDamageDealtInstance: ({ name = "Enemy", amount = 100, heal = false } = {}) => {
+            const value = createPanel({ classes: ["damageValue"], paneltype: "Label", text: String(amount) });
+            const instance = createPanel({
+                id: name,
+                classes: heal ? ["damageImpactInstance", "is_heal"] : ["damageImpactInstance"],
+                children: [value],
+            });
+            damageImpactInstances = [...damageImpactInstances, instance];
+            damageImpactInfo.setChildren(damageImpactInstances);
+            return value;
+        },
+        setDamageDealtText: (value, amount) => { value.setText(String(amount)); },
         // A floating combat-feedback indicator: `kind` is the category class
         // ("deny", "gold", "damage_type_gun", ...), text is the amount.
         spawnFeedbackIndicator: ({ kind = "damage_type_gun", amount = 100 } = {}) => {
@@ -474,7 +488,7 @@ function createHarness({
                 panel.setClasses(alive ? ["Alive", "Team" + team] : ["Team" + team]);
             }
         },
-        setObjectiveHealth: ({ type = null, dead = false, weakened = false, friend = false } = {}) => {
+        setObjectiveHealth: ({ type = null, dead = false, weakened = false, transforming = false, friend = false } = {}) => {
             const typeClass = {
                 base_guardian: "is_barracks_boss",
                 shrine: "is_shield_generator",
@@ -486,6 +500,7 @@ function createHarness({
             if (typeClass) classes.push(typeClass);
             if (dead) classes.push("is_dead");
             if (weakened) classes.push("is_weakened");
+            if (transforming) classes.push("is_transforming");
             if (friend) classes.push("friend");
             objectiveHealth.setClasses(classes);
         },
@@ -1468,15 +1483,25 @@ describe("death_http_bridge", () => {
         expect(enemy.events("objective_base_guardian")).toHaveLength(1);
     });
 
-    test("emits objective_patron_weakened when the Patron bar gains is_weakened", () => {
+    test("emits objective_patron_weakened once when the Patron bar gains is_transforming", () => {
+        const harness = createHarness();
+        harness.setObjectiveHealth({ type: "titan" });
+        harness.advanceObjectiveScan();
+        harness.setObjectiveHealth({ type: "titan", transforming: true });
+        harness.advanceObjectiveScan();
+        harness.advanceObjectiveScan();
+
+        expect(harness.events("objective_patron_weakened")).toHaveLength(1);
+    });
+
+    test("does not emit objective_patron_weakened for is_weakened alone", () => {
         const harness = createHarness();
         harness.setObjectiveHealth({ type: "titan" });
         harness.advanceObjectiveScan();
         harness.setObjectiveHealth({ type: "titan", weakened: true });
         harness.advanceObjectiveScan();
-        harness.advanceObjectiveScan();
 
-        expect(harness.events("objective_patron_weakened")).toHaveLength(1);
+        expect(harness.events("objective_patron_weakened")).toHaveLength(0);
     });
 
     test("emits objective_base_guardian from a friendly-credited boss-killed feed row", () => {
