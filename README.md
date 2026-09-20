@@ -1,4 +1,4 @@
-<a href="https://gamebanana.com/mods/710227"><img src="https://gamebanana.com/mods/embeddables/710227?type=large" alt="Lovelock mod on GameBanana" /></a>
+<a href="https://gamebanana.com/mods/718568"><img src="https://gamebanana.com/mods/embeddables/718568?type=large" alt="Lovelock mod on GameBanana" /></a>
 
 # Lovelock Companion
 
@@ -6,9 +6,15 @@ Lovelock Companion is a desktop app that syncs local-player events in Deadlock t
 
 ## !!! Required Deadlock mod !!!
 
-Lovelock Companion does not work by itself. Install and enable the [Lovelock mod from GameBanana](https://gamebanana.com/mods/710227) in Deadlock before starting the companion. The mod detects gameplay events and writes them to the log that the companion listens to.
+Lovelock Companion does not work by itself. Install and enable the [Lovelock mod from GameBanana](https://gamebanana.com/mods/718568) in Deadlock before starting the companion. The mod detects gameplay events and writes them to the log that the companion listens to.
 
 Huge shoutout to volc/bolc for creating the original DeadlockShock mod that Lovelock Companion is built on.
+
+## Lovense promotion
+
+There is a special promotion with Lovense for Lovelock, running now until October 11, 2026. Check it out and grab a toy through [my Lovense link](https://www.lovense.com/a/Asteriaow).
+
+This is an affiliate link, so I may earn a commission if you buy through it, at no extra cost to you.
 
 ## Disclaimer
 
@@ -25,7 +31,7 @@ You don't need to build anything or know how to code to use this. Here's everyth
 
 **Steps:**
 
-1. **Install the Lovelock mod.** Download it from [GameBanana](https://gamebanana.com/mods/710227) and follow GameBanana's install instructions (or use a mod manager like [Deadlock Mod Manager](https://deadlockmods.app/)) to get it into Deadlock's `addons` folder, then make sure it's enabled in Deadlock's in-game mods menu.
+1. **Install the Lovelock mod.** Download it from [GameBanana](https://gamebanana.com/mods/718568) and follow GameBanana's install instructions (or use a mod manager like [Deadlock Mod Manager](https://deadlockmods.app/)) to get it into Deadlock's `addons` folder, then make sure it's enabled in Deadlock's in-game mods menu.
 
 2. **Set Deadlock's launch option.** In Steam, right-click Deadlock → **Properties** → **General** → **Launch Options**, and add:
    ```
@@ -62,10 +68,7 @@ overlap-priority order (reorderable in the UI) decides which one drives the toy.
 | **Damage taken** | You take damage (health or shields) | Strength follows an intensity curve: a heavier beating over a rolling window drives the toy harder. |
 | **Healing received** | Your health/shields go up | Amount-based: a rolling-window sum gated by a threshold you set. |
 | **Healed an ally** | You restore a teammate's health | From the ally-support impact popup. |
-| **Shielded an ally** | You give a teammate a barrier/shield | From the ally-support impact popup. |
 | **Damage given** | The game shows floating damage numbers for your hits | Amount-based: rolling-window sum gated by a threshold. |
-| **Soul orb deny** | You deny an enemy's soul orb | Reads the dedicated `deny` combat indicator. |
-| **Parry success** | You throw a parry and it connects (an enemy is stunned within a short window, and you aren't) | See caveats below. |
 | **Got parried** | You get stunned right after starting a parry | Detected from your crosshair's stunned state. |
 | **Guardian destroyed** | An enemy Guardian falls | Objectives minimap panel loses its `Alive` state. |
 | **Walker destroyed** | An enemy Walker falls | Same objectives minimap surface. |
@@ -79,19 +82,11 @@ Copy a vibration profile between triggers with the explicit **Copy** control
 Lovense connection, all vibration profiles, and ability filters are saved to
 your OS user config directory between runs.
 
-**Parry / soul-orb caveats.** Deadlock's HUD has no "parry landed" signal, so
-**Parry success** is inferred: you threw a parry and, within ~1 s, an enemy
-shows the stunned state while you do not. An unrelated ability stun landing in
-that window is the one false-positive path; a parry that hits nothing fires
-nothing. **Soul orb secure** is not a trigger: the HUD shows one flat soul
-number for every soul gain, so "you shot the orb" can't be told from a
-walk-over. Details in
-[`docs/parry-and-soul-deny-research.md`](docs/parry-and-soul-deny-research.md).
 
 **Objective caveats.** Guardian / Walker / Game won read persistent, map-wide
 HUD panels and are reliable. Base Guardian / Shrine / Patron weakened have no
 such panel, so they are read off the single centre-screen boss-health bar,
-which only shows the objective you are currently near or contesting — a kill
+which only shows the objective you are currently near or contesting, so a kill
 that happens while you are elsewhere can be missed. Each trigger's `detection`
 field in the log names which HUD surface fired it. Details in
 [`docs/objective-triggers-research.md`](docs/objective-triggers-research.md).
@@ -136,12 +131,6 @@ Lovelock Companion remembers your setup, including the Lovense connection, every
 `src/provider.rs` owns the Lovense connection snapshot, connected blocking client, toy targets, test action, execution, and disconnect. `src/action.rs` owns vibration settings, validation, immutable resolution, and safe summaries; `src/action_ui.rs` contains the explicit egui editor. `src/theme.rs` holds Lovelock Companion's visual identity: a pastel bubblegum-pink accent on a dusty-plum dark theme, paired with the Baloo 2 display font and Atkinson Hyperlegible body font. Event acceptance resolves an action before a bounded worker queue, so later UI edits cannot change queued work and provider calls never run on the egui thread.
 
 Saved state is strict schema 7 JSON; anything else (including old multi-provider saves) resets to defaults and the old file is preserved alongside it as a backup rather than migrated, since Lovelock Companion is a from-scratch Lovense-only companion.
-
-## Publishing a release
-
-1. Choose the release version and update `companion/Cargo.toml`.
-2. Run the companion tests.
-3. Push the matching tag:
 
 ```sh
 git tag v<version>
