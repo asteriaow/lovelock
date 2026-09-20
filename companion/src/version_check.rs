@@ -496,7 +496,7 @@ mod tests {
 
         let (endpoint, _) = serve_once(
             "200 OK",
-            br#"{"tag_name":"v0.2.0"}"#.to_vec(),
+            br#"{"tag_name":"v99.0.0"}"#.to_vec(),
             Duration::ZERO,
         );
         let mut owner =
@@ -507,7 +507,7 @@ mod tests {
         wait_for_completion(&mut owner);
         assert!(matches!(
             owner.state,
-            VersionCheckState::UpdateAvailable { ref latest } if latest == &version("0.2.0")
+            VersionCheckState::UpdateAvailable { ref latest } if latest == &version("99.0.0")
         ));
         assert!(repaint_count.load(AtomicOrdering::Relaxed) > 0);
 

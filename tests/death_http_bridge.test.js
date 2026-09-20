@@ -572,7 +572,7 @@ describe("death_http_bridge", () => {
             {
                 schema: 1,
                 event: "hook_ready",
-                mod_version: "0.1.0",
+                mod_version: "1.0.0",
                 session_id: expect.any(String),
                 client_time_ms: expect.any(Number),
                 poll_interval_ms: 100,
@@ -580,7 +580,7 @@ describe("death_http_bridge", () => {
             {
                 schema: 1,
                 event: "ability_catalog",
-                mod_version: "0.1.0",
+                mod_version: "1.0.0",
                 session_id: expect.any(String),
                 client_time_ms: expect.any(Number),
                 abilities: [{
@@ -665,7 +665,7 @@ describe("death_http_bridge", () => {
         expect(harness.events("ability_used")).toEqual([3, 2, 1, 0].map((charges, index) => ({
             schema: 1,
             event: "ability_used",
-            mod_version: "0.1.0",
+            mod_version: "1.0.0",
             session_id: expect.any(String),
             client_time_ms: expect.any(Number),
             sequence: index + 1,
@@ -688,13 +688,13 @@ describe("death_http_bridge", () => {
 
         expect(harness.events("ability_cooldown_ready")).toEqual([
             expect.objectContaining({
-                mod_version: "0.1.0",
+                mod_version: "1.0.0",
                 sequence: 1,
                 detection: "cooldown_finished",
                 ability_slot: 1,
             }),
             expect.objectContaining({
-                mod_version: "0.1.0",
+                mod_version: "1.0.0",
                 sequence: 2,
                 detection: "charge_restored",
                 charges_before: 1,
@@ -857,7 +857,7 @@ describe("death_http_bridge", () => {
                 event: "local_player_death",
                 sequence: 1,
                 detection: "top_bar_local_player_dead_class",
-                mod_version: "0.1.0",
+                mod_version: "1.0.0",
             }),
         ]);
     });
@@ -1594,7 +1594,7 @@ describe("death_http_bridge", () => {
         expect(harness.events("local_player_respawn")).toEqual([
             expect.objectContaining({
                 event: "local_player_respawn",
-                mod_version: "0.1.0",
+                mod_version: "1.0.0",
                 session_id: expect.any(String),
             }),
         ]);
