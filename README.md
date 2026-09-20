@@ -4,6 +4,8 @@
 
 Lovelock Companion is a desktop app that syncs local-player events in Deadlock to a Lovense toy over the local Standard API. It reacts to deaths, kills, assists, ability use and cooldowns, damage dealt and taken, healing received, objective takedowns (Guardian, Walker, Shrine, ...), and winning the match. See [Triggers](#triggers) for the full list.
 
+**Having trouble? See the [FAQ and troubleshooting guide](FAQ.md).**
+
 ## !!! Required Deadlock mod !!!
 
 Lovelock Companion does not work by itself. Install and enable the [Lovelock mod from GameBanana](https://gamebanana.com/mods/718568) in Deadlock before starting the companion. The mod detects gameplay events and writes them to the log that the companion listens to.
@@ -52,6 +54,8 @@ You don't need to build anything or know how to code to use this. Here's everyth
 If something's not connecting, check **Menu → Show logs** inside the companion for live diagnostics.
 
 ## Troubleshooting
+
+More answers are in the [FAQ and troubleshooting guide](FAQ.md).
 
 **Triggers don't fire, but the Game connection tab says "Listening".** "Listening" only means the companion is watching the log file. It does not mean Deadlock is sending anything. Check these in order:
 
