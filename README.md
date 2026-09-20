@@ -88,8 +88,7 @@ HUD panels and are reliable. Base Guardian / Shrine / Patron weakened have no
 such panel, so they are read off the single centre-screen boss-health bar,
 which only shows the objective you are currently near or contesting, so a kill
 that happens while you are elsewhere can be missed. Each trigger's `detection`
-field in the log names which HUD surface fired it. Details in
-[`docs/objective-triggers-research.md`](docs/objective-triggers-research.md).
+field in the log names which HUD surface fired it.
 
 ## Contents
 
